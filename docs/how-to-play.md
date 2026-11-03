@@ -1,53 +1,52 @@
-# How to play the Rust development build
+# How to play
 
-The Rust version is a local PvE preview. The first mission was played successfully in the AIR client; later progression systems have automated AMF/MySQL coverage and still need broader client acceptance. See [current progress](migration/progress.md) for unfinished features.
-
-## Start on the configured Windows workstation
-
-1. Open PowerShell in the repository root. Check that MySQL is running on `127.0.0.1:3307`; [local setup](local-development.md) includes its start command.
-2. If the backend is already running on port 8080, use it. Otherwise run `./scripts/start-local.ps1`. This requires the built server, ignored local database credentials and imported catalogs.
-3. Launch `.tools/client/NSCUSTOM.exe`. Use the development login saved in `.tools/local-account.json`, or register a new account in the client. Keep credentials out of screenshots and commits.
-4. Select your existing character, or create one and choose its starting element. Enter the village.
-
-A fresh Git clone does not include the AIR runtime, SWF assets, local toolchain or database. Complete [local setup](local-development.md) and [reference setup](../reference/README.md) first. Running the backend without `DATABASE_URL` only provides diagnostic endpoints.
+This Rust version is a local PvE preview. Complete [runtime setup](runtime-setup.md) first. A clone does not include the AIR runtime, SWF assets, local credentials or catalog export.
 
 ## First session
 
-1. Open the profile and spend the available attribute points. The total allocated plus free points must equal your character level.
-2. Visit the shop to buy equipment you can afford and meet the level/premium requirements for. Equip purchases through the inventory; unwanted owned items can be sold.
-3. Visit the academy to learn affordable skills for your elements, then equip the skills you want to use. Additional elements follow the free/premium slot rules. Saved skill presets require premium.
-4. Open the mission room and choose the first available mission. Start the battle, defeat its enemies and finish through the result screen to save XP and gold.
-5. Return to the village. Reconnect and select the character again to confirm saved progress.
+1. Start the provisioned MySQL database and Rust backend. If already running, use that instance; check `/health/live` for liveness.
+2. Launch the prepared AIR client. On the configured workstation, use `.tools/client/NSCUSTOM.exe` in the development checkout. An unmodified legacy client points at different hostnames.
+3. Register an account or log in. Existing workstation development credentials are stored locally in `.tools/local-account.json`, outside Git.
+4. Select or create a character, choose its starting element and enter the village.
+5. Open the profile and allocate available attribute points. Allocated plus free points must equal your level.
+6. Buy affordable shop equipment and equip it from inventory. Learn affordable academy skills for your elements, then equip them. Saved skill presets require premium.
+7. Select the first available mission, defeat its enemies and finish through the result screen to save XP/gold.
+8. Return to the village. Reconnect and load the character to check saved progress.
 
-Combat uses the original client's controls and animations. Mission rewards are committed when completion succeeds. Losing the connection or restarting the backend during a mission can require starting that mission again.
+The first mission is verified in the actual AIR client. Later systems below are implemented and headless-tested; broader actual-client acceptance remains open.
 
-## Progression currently implemented
+## Rank progression
 
-| At level | Required current rank | Exam and resulting rank |
+| Level | Current rank | Exam and promotion |
 |---|---|---|
 | 20 | Genin | Chunin Exam → Chunin |
 | 40 | Chunin | Jounin Exam → Jounin |
-| 60 | Jounin | Special Jounin Exam → Special Jounin, with a class choice |
+| 60 | Jounin | Special Jounin Exam → Special Jounin with class choice |
 | 80 | Special Jounin | Ninja Tutor Exam → Senior Ninja Tutor |
 
-Complete the unlocked exam stages in sequence, then claim promotion from its panel. Promotion and its reward package are saved together. The rank gates limit normal leveling until promotion.
+Complete unlocked stages in sequence, then claim promotion from the panel. Rank caps block further normal leveling until promotion. Rank and its reward package save together.
 
-Pets can be bought before use, but equipping requires Chunin or higher. Equipped pets earn XP from completed missions. NPC recruitment supports up to two paid teammates; the squad is consumed when a mission completes. Pet renaming uses Rename Badges.
+## Other implemented systems
 
-The blacksmith supports 65 reference recipes. Gold forging consumes the recipe's materials and base weapon; token forging consumes the base weapon and token cost. Talents support discovery, TP upgrades/packages and paid resets. Sage Mode discovery requires level 80 and 2,000,000 gold; Sage skill upgrades spend SS. Advanced academy upgrades follow configured prerequisite chains.
+- Buy, rename and release pets; equipping requires Chunin or higher. Equipped pets earn mission XP. Renaming consumes Rename Badges.
+- Recruit up to two paid NPC teammates; completing a mission consumes the squad.
+- Forge from 65 reference recipes. Gold forging consumes materials and a base weapon; token forging consumes tokens and the base weapon.
+- Discover talents, spend TP on upgrades, buy TP packages and reset talents using the required seals.
+- Discover Sage Mode at level 80 for 2,000,000 gold, then spend SS on upgrades and equip Sage skills.
+- Upgrade advanced academy skills through configured prerequisite chains. Changing an existing Special Jounin class spends tokens.
 
-These later systems have headless verification, rather than complete AIR acceptance. Natural TP/SS/material farming, secondary battle modes, friends/mail/clans/crews, production PvP/chat, events, pet training/combining and administration are still incomplete. A complete progression economy is not yet available.
+Natural TP/SS/material farming, secondary modes, social systems, production PvP/chat, events, pet training/combining and administration are unfinished. A complete progression economy is not yet available. See [progress](progress.md).
 
 ## Troubleshooting
 
-| Symptom | What to check |
+| Symptom | Action |
 |---|---|
-| Client cannot connect | Use the prepared local client; check MySQL and the backend, then `http://127.0.0.1:8080/health/live`. |
-| Backend says database is not configured | Start through the configured local helper, or set `DATABASE_URL` explicitly. |
-| Missing icons, maps or assets | Check `GAME_DATA_ROOT`, `CLIENT_ASSET_ROOT` and the materialized reference assets. |
-| Session error after another login | Log in again; a new login rotates the account session key. |
-| Invalid battle token | Restart the mission. Tokens expire after 30 minutes and are cleared by a backend restart. |
-| Method is not implemented | Check the [progress report](migration/progress.md); record the panel/action and method name for remaining gameplay work. |
-| Readiness returns 503 | Expected for this preview. Liveness and production readiness are separate; readiness acceptance is unfinished. |
+| Cannot connect | Check MySQL/backend and that the prepared client targets the listener. |
+| Database not configured | Set `DATABASE_URL` before starting the backend. |
+| Missing icons/maps | Check original assets and both asset-root variables. |
+| Session error | Log in again; another login rotates the key. |
+| Invalid battle token | Restart the mission; tokens expire after 30 minutes or a backend restart. |
+| Method not implemented | Check remaining work and report the panel/action and method name. |
+| Readiness 503 | Expected in this preview; production acceptance is unfinished. |
 
-For regressions, include the action, character level/rank, expected result and error text. Do not send passwords or session keys. Developers can run the [headless gameplay suite](../tests/compatibility/gameplay/README.md) without recording or controlling the game window.
+Saved progress survives backend restarts; unfinished missions do not. Report errors with action, character level/rank and error text, excluding credentials/session keys. [Headless tests](../tests/compatibility/gameplay/README.md) check server behavior without recording or controlling the game window.

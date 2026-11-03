@@ -1,6 +1,6 @@
 # Gateway golden fixtures
 
-Regenerate from the repository root:
+Regenerate on the `sprint/1-protocol-compatibility` development branch from its repository root. The PHP generator and reference checkout are intentionally excluded from runtime review:
 
 ```sh
 php tests/compatibility/generate-gateway-fixtures.php

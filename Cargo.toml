@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["apps/game-server", "apps/chat-server", "apps/pvp-server", "apps/protocol-spike", "crates/shared", "crates/amf-codec", "crates/socket-protocol", "crates/authentication", "crates/persistence"]
+members = ["apps/game-server", "crates/shared", "crates/amf-codec", "crates/authentication", "crates/persistence"]
+default-members = ["apps/game-server"]
 
 [workspace.package]
 version = "0.1.0"

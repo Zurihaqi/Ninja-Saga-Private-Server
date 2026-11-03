@@ -1,11 +1,20 @@
 # Headless gameplay regression
 
-Run `./scripts/test-gameplay.ps1` from the configured Windows workspace. It requires the local MySQL instance and imported schema/catalogs, and never launches or controls the game window.
+The ignored integration test sends AMF3 envelopes through the gateway and checks MySQL state. It covers accounts/characters, points, missions and duplicate rewards, shops, normal/advanced academy, presets, all four exams, pets, NPC recruitment, crafting, consumables, talents, Sage Mode and classes. It never launches, records or controls the AIR client.
 
-The Rust test sends real AMF3 envelopes through the Axum gateway and verifies MySQL changes. It covers accounts, actual AIR creation nesting/hash, character/battle data, equipment, points, leveling, mission rewards and duplicate completion, session rotation, shops, normal/advanced academy, skill presets, all four exams and concurrent promotion claims, pet ownership/rename/release/mission XP, paid NPC recruitment and mission consumption, forging/material rollback, consumable consumption, talent discovery/upgrades/reset, Sage Mode and class changes. It creates a uniquely named synthetic account and deletes it on success. Failed runs may leave their synthetic account for diagnosis. Existing player accounts are not modified.
+Create a dedicated empty MySQL database named `ninja_ci_test`, then set:
 
-Use `./scripts/test-gameplay.ps1 -ReferenceCatalog` to run with the original JSON catalogs. Test code is split between the gateway's account/mission regression and `apps/game-server/src/tests/extension.rs` for progression/companions/crafting.
+```powershell
+$env:DATABASE_URL = 'mysql://USER:PASSWORD@127.0.0.1:3307/ninja_ci_test'
+$env:BOOTSTRAP_GAMEPLAY_TEST_DB = '1'
+$env:GAME_DATA_ROOT = Join-Path $PWD 'tests/compatibility/gameplay'
+cargo test -p game-server --lib persistent_account_character_and_ownership_flow --locked -- --ignored --nocapture
+```
 
-`mission.json` is the minimal mission-definition subset required by the test, derived from the pinned `public/game_data/mission.json` entry `msn_1`. It is deliberately independent of downloaded SWF assets. The test uses enemy statistics and rewards from the test database.
+Replace placeholders with isolated test credentials. Bootstrap refuses any database name other than `ninja_ci_test`; it creates schema and imports synthetic fixtures. CI runs the same command against its MySQL service on port 3306.
 
-For CI, set `BOOTSTRAP_GAMEPLAY_TEST_DB=1` and point `DATABASE_URL` at a dedicated database named `ninja_ci_test`. This explicitly permits schema/fixture initialization in that database only; normal local runs use their existing imported database. Hosted CI runs the same AMF and persistence assertions. Full combat rendering and damage animations remain actual-client checks.
+To test existing imported original catalogs in an isolated development database, unset `BOOTSTRAP_GAMEPLAY_TEST_DB`, set `DATABASE_URL` to that test database and point `GAME_DATA_ROOT` at the original game-data directory. Never run this against a production database.
+
+Each run creates a uniquely named synthetic account, exercises state changes and deletes the account on success. Failed runs can leave that account for diagnosis. Existing player accounts are not changed. Account/mission tests live in `apps/game-server/src/lib.rs`; extended progression is in `apps/game-server/src/tests/extension.rs`.
+
+The checked-in JSON and SQL are minimal synthetic data; `mission.json` follows the first reference mission's enemy shape. They do not contain SWF assets. The broader development branch retains workstation PowerShell helpers and PHP/Node fixture generators; these are excluded from runtime review. Rendering and combat animation remain actual-client acceptance checks.

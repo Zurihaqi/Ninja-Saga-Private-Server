@@ -220,15 +220,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
-name = "chat-server"
-version = "0.1.0"
-dependencies = [
- "axum",
- "shared",
- "tokio",
-]
-
-[[package]]
 name = "cipher"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1113,29 +1104,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "protocol-spike"
-version = "0.1.0"
-dependencies = [
- "axum",
- "getrandom 0.3.4",
- "serde",
- "serde_json",
- "shared",
- "socket-protocol",
- "tokio",
- "tower",
-]
-
-[[package]]
-name = "pvp-server"
-version = "0.1.0"
-dependencies = [
- "axum",
- "shared",
- "tokio",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1441,13 +1409,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "socket-protocol"
-version = "0.1.0"
-dependencies = [
- "serde_json",
 ]
 
 [[package]]

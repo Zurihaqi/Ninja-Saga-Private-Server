@@ -1,4 +1,4 @@
-name: Rust foundation
+name: Rust runtime
 on: [push, pull_request]
 permissions:
   contents: read
@@ -29,9 +29,4 @@ jobs:
           DATABASE_URL: mysql://root:ci-only-password@127.0.0.1:3306/ninja_ci_test
           BOOTSTRAP_GAMEPLAY_TEST_DB: '1'
           GAME_DATA_ROOT: tests/compatibility/gameplay
-      - run: cargo build --workspace --locked
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: npm ci --prefix tests/compatibility/socket-client --ignore-scripts --no-audit --no-fund
-      - run: npm test --prefix tests/compatibility/socket-client
+      - run: cargo build --release --package game-server --bins --locked

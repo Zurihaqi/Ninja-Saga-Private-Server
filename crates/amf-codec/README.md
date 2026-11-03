@@ -15,7 +15,7 @@ Unsupported: cyclic references, typed/externalizable objects, dates, XML, vector
 
 ## Fixture provenance
 
-`tests/generate-fixtures.php` uses the unmodified standalone SabreAMF serializer from `reference/upstream/Database/Laragon/ninjasage/app/ThirdParty/SabreAMF`, commit `ecf9012d885d1c89fd5f42791eed4f37f90f2edd`. Run `php crates/amf-codec/tests/generate-fixtures.php` at workspace root to regenerate. Fixtures are synthetic inputs serialized by the reference codec, **not captured client sessions**. PHP deprecation diagnostics are suppressed for this old library; no application services or database are booted.
+Fixtures were generated with the unmodified standalone SabreAMF serializer from pinned commit `ecf9012d885d1c89fd5f42791eed4f37f90f2edd`. Regeneration tools remain on the `sprint/1-protocol-compatibility` development branch (`crates/amf-codec/tests/generate-fixtures.php`); PHP and the reference checkout are excluded here. Fixtures are synthetic inputs serialized by the reference codec, **not captured client sessions**. No application services or database are booted by generation.
 
 The three binary fixtures test primitive/associative values and multiple bodies, AMF3 request integer boundaries, and the AMF0-envelope/AMF3-object response shape. Rust tests assert both decoded semantics and byte-identical re-encoding against these fixtures. This does not establish login or full gateway compatibility.
 
