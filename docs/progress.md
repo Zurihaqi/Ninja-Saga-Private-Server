@@ -2,6 +2,8 @@
 
 Status: **local PvE preview; production promotion pending**. Runtime review is based on development checkpoint `bd31536a` and subsequent documentation. Original `main` is preserved on `legacy/php-node` at `ecf9012d885d1c89fd5f42791eed4f37f90f2edd`. This PR has not replaced or deployed `main`.
 
+Review: [draft PR #1](https://github.com/Zurihaqi/Ninja-Saga-Private-Server/pull/1). Runtime code and packaging checkpoint `05045df4` passed the checks below; subsequent progress-link updates are documentation-only.
+
 | Flow | Evidence |
 |---|---|
 | Accounts, characters, village, first mission | AIR checks; user-confirmed battle/completion; headless persistence/replay checks |
