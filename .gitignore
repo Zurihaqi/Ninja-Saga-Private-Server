@@ -1,0 +1,13 @@
+/target/
+/.tools/
+/reference/upstream/
+**/node_modules/
+**/vendor/
+.env
+*.log
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+/.vscode/
+/.idea/

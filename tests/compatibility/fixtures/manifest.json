@@ -1,0 +1,29 @@
+{
+    "reference_commit": "ecf9012d885d1c89fd5f42791eed4f37f90f2edd",
+    "kind": "generated source-derived fixtures; not live HTTP/client captures",
+    "sources_sha256": {
+        "app/Services/Amf/GameService/VersionService.php": "bf02ee5d292f0ff012ed6dd8e1b9e77f9d2fe8063ff2b939c8cefc48896b7858",
+        "app/Http/Controllers/AmfController.php": "7d7caac1fcba2be4dc10d9be24aea05756ed81397ebe128a8aaa6887cf63be87",
+        "app/ThirdParty/SabreAMF/Message.php": "3261d346135fd64ca93ddb258c17fbb942bfd340104ac2696b7a923a952906f4",
+        "app/ThirdParty/SabreAMF/AMF0/Serializer.php": "e9fd330b994d6fdbf18f4854ef674aaf6bfefe8ccc43b6cd00665e51c28188a4",
+        "app/ThirdParty/SabreAMF/AMF3/Serializer.php": "e04c672cf2f6b4dd3f0dbd0b7465e9477c768c6f79d77ae91b3fabaf0bab54f9"
+    },
+    "files": {
+        "game-version-amf0-request.amf": {
+            "bytes": 36,
+            "sha256": "ae24488ab55c53176e59b3afb39851354eadcb3c7aad5797dd883cf482fa6e09"
+        },
+        "game-version-amf0-response.amf": {
+            "bytes": 104,
+            "sha256": "a6c4c3ca04a66e90149ebcb0329869cd1d2e971ee0524a937517eb3cc2a79ba4"
+        },
+        "game-version-amf3-request.amf": {
+            "bytes": 35,
+            "sha256": "ac173a52d3ab499383bfc7faf4d6216460810f823fac3d37178a18478cb32d3e"
+        },
+        "game-version-amf3-response.amf": {
+            "bytes": 94,
+            "sha256": "55ee5b4b207cedac5353d7e7eddde4fe91ad9ca49ed5a31d4c36573ee1610686"
+        }
+    }
+}

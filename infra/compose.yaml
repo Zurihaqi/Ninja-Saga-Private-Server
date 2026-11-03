@@ -1,0 +1,37 @@
+# Development foundation only. No schema import or game readiness is implied.
+services:
+  game-server:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile
+    environment:
+      BIND_ADDR: 0.0.0.0:8080
+    ports: ["127.0.0.1:8080:8080"]
+  chat-server:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile
+    entrypoint: ["/usr/local/bin/chat-server"]
+    environment:
+      BIND_ADDR: 0.0.0.0:3002
+    ports: ["127.0.0.1:3002:3002"]
+  pvp-server:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile
+    entrypoint: ["/usr/local/bin/pvp-server"]
+    environment:
+      BIND_ADDR: 0.0.0.0:3000
+    ports: ["127.0.0.1:3000:3000"]
+  mysql:
+    image: mysql:8.4
+    profiles: ["database"]
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+      MYSQL_DATABASE: ninja_saga_test
+      MYSQL_USER: ninja_test
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set a unique MYSQL_PASSWORD for the isolated test database}
+    ports: ["127.0.0.1:3307:3306"]
+    volumes: ["test-mysql:/var/lib/mysql"]
+volumes:
+  test-mysql:
