@@ -2,6 +2,8 @@
 
 The existing workspace has Rust 1.93.0, portable GNU linker tools, MySQL 8.4.7, original catalogs and a separately configured AIR client. Toolchains, credentials, downloaded assets and database files live under ignored `.tools/` and `reference/upstream/`.
 
+This guide applies to `sprint/1-protocol-compatibility`, which retains workstation helpers. The runtime review branch excludes those tools and has its own configuration guide. For player steps, see [how to play](how-to-play.md); for promotion rules, see [branch policy](branch-policy.md).
+
 ## Start the existing setup
 
 MySQL uses `.tools/mysql.ini`, loopback port 3307 and `.tools/mysql-data`. If it is stopped, start it in PowerShell:
