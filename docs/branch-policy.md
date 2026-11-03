@@ -2,6 +2,8 @@
 
 `main` is reserved for reviewed production-ready changes. The Rust migration is not production-ready yet; its runtime PR remains draft until the acceptance items below are satisfied. Creating a PR does not authorize a merge or deployment.
 
+Current review: [draft PR #1](https://github.com/Zurihaqi/Ninja-Saga-Private-Server/pull/1), from `release/rust-runtime` to `main`.
+
 | Branch | Purpose |
 |---|---|
 | `legacy/php-node` | Preserved original PHP/Node implementation, original client and assets; created from the existing `main` before the proposed Rust replacement. |

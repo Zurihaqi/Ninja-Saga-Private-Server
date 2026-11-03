@@ -4,6 +4,8 @@ Plan status: **core playability in progress** on the existing `sprint/1-protocol
 
 Runtime checkpoint: `bd31536a` implements persistent PvE progression and protocol compatibility. Release preparation separates runtime review from ongoing development: original `main` is preserved as `legacy/php-node`, and `release/rust-runtime` excludes workstation tools and protocol experiments. The replacement PR remains draft; `main` has not been cut over. See [branch policy](../branch-policy.md) and [how to play](../how-to-play.md).
 
+Review: [draft PR #1](https://github.com/Zurihaqi/Ninja-Saga-Private-Server/pull/1). Runtime checkpoint `05045df4` passes 20 unit/fixture tests, isolated MySQL integration, formatting, strict Clippy and an optimized release build. Development documentation and tooling remain on this branch; the runtime PR retains tests/CI and operating docs. Hosted CI, staging/container operation and production acceptance remain open.
+
 ## Current priority: complete gameplay loops
 
 User direction: prioritize a fully playable game before polishing lower-priority edge cases and visual details. Use headless AMF/MySQL regression tests by default; actual-client checks are occasional acceptance checks. Authentication, transactional purchases and duplicate-reward protection remain part of normal implementation.
