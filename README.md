@@ -4,6 +4,8 @@ Rust backend migration with a **first playable local PvE flow**: register/login,
 
 The pinned source inventory is in [docs/inventory](docs/inventory); actual progress and remaining gates are in [docs/migration/progress.md](docs/migration/progress.md).
 
+Start with [how to play](docs/how-to-play.md), [local setup](docs/local-development.md), and the [branch/release policy](docs/branch-policy.md). The migration is a development preview. `main` is the production destination; the Rust replacement must pass acceptance before promotion. The original implementation is preserved on [`legacy/php-node`](https://github.com/Zurihaqi/Ninja-Saga-Private-Server/tree/legacy/php-node).
+
 ## Project layout
 
 | Folder | Contents |

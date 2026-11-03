@@ -2,6 +2,8 @@
 
 Plan status: **core playability in progress** on the existing `sprint/1-protocol-compatibility` branch. The first local PvE slice works in the actual AIR client; the user confirmed battling and completing the first mission. This is an early playable slice, not full game parity. No new branch is created per sprint.
 
+Runtime checkpoint: `bd31536a` implements persistent PvE progression and protocol compatibility. Release preparation separates runtime review from ongoing development: original `main` is preserved as `legacy/php-node`, and `release/rust-runtime` excludes workstation tools and protocol experiments. The replacement PR remains draft; `main` has not been cut over. See [branch policy](../branch-policy.md) and [how to play](../how-to-play.md).
+
 ## Current priority: complete gameplay loops
 
 User direction: prioritize a fully playable game before polishing lower-priority edge cases and visual details. Use headless AMF/MySQL regression tests by default; actual-client checks are occasional acceptance checks. Authentication, transactional purchases and duplicate-reward protection remain part of normal implementation.
@@ -37,7 +39,7 @@ The normal progression API flow now covers gear, skills, points, missions, all f
 | NSR-006 AMF spike | Bounded codec, acyclic references, ByteArray and actual AIR account/mission calls | Additional types and full method coverage |
 | NSR-007 Socket.IO spike | EIO3 text framing and isolated polling `/compat` namespace; Socket.IO 2.5.0 client checks pass | Flash networking, WebSocket upgrades, production auth/events |
 | NSR-008 foundation | Binaries, SQLx pool, logs/config/shutdown/liveness; lockfile, CI and Compose | Docker execution and deployment hardening |
-| NSR-009 fixtures | PHP serializer/deserializer fixtures and legacy JS parser fixture; 25 Rust tests | Captured login/gameplay, DB differential harness |
+| NSR-009 fixtures | PHP serializer/deserializer fixtures and legacy JS parser fixture; 28 regular Rust tests plus explicit MySQL integration | Captured login/gameplay, DB differential harness |
 | NSR-010 review | Initial module contracts documented | Protocol gates prevent full acceptance |
 
 The current chat/PvP binaries remain health-only process shells; the polling experiment is separate. Full protocol acceptance, particularly Flash realtime transport, remains open while core AMF/PvE playability advances under the user's revised priority.
