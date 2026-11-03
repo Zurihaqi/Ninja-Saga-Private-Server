@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["apps/game-server", "apps/chat-server", "apps/pvp-server", "crates/shared", "crates/amf-codec"]
+members = ["apps/game-server", "apps/chat-server", "apps/pvp-server", "apps/protocol-spike", "crates/shared", "crates/amf-codec", "crates/socket-protocol", "crates/authentication", "crates/persistence"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,7 +9,7 @@ publish = false
 
 [workspace.dependencies]
 axum = "=0.8.8"
-tokio = { version = "=1.49.0", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "=1.49.0", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.22", features = ["env-filter", "json"] }
 shared = { path = "crates/shared" }

@@ -2,7 +2,7 @@
 
 **Version:** 1.0
 **Created:** November 3, 2026
-**Status:** Sprint 0 in progress — source inventories and initial Rust AMF spike implemented; compatibility gates remain open. See [progress](progress.md).
+**Status:** Core playability in progress — first mission verified in AIR; shops, exams, companions, crafting, talents and Sage Mode implemented and headless-tested. Prioritize remaining gameplay loops before lower-priority polish. See [progress](progress.md).
 **Project Type:** Full backend rewrite
 **Target Language:** Rust
 **Development Approach:** Multi-agent engineering
@@ -1931,4 +1931,4 @@ https://github.com/zurihaqi/Ninja-Saga-Private-Server/blob/main/Database/Laragon
 
 **End of Migration Plan — Version 1.0**
 
-**Next milestone: Sprint 0 — Original System Baseline, Protocol Inventory, and Rust Compatibility Validation.**
+**Current milestone: complete gameplay loops on the existing branch. See [current progress and remaining work](progress.md); the sprint sequence above is retained as the original migration reference.**

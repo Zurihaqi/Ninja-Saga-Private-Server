@@ -5,10 +5,33 @@ permissions:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ci-only-password
+          MYSQL_DATABASE: ninja_ci_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pci-only-password"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install 1.93.0 --profile minimal --component rustfmt --component clippy
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      - run: cargo test -p game-server --lib persistent_account_character_and_ownership_flow --locked -- --ignored
+        env:
+          DATABASE_URL: mysql://root:ci-only-password@127.0.0.1:3306/ninja_ci_test
+          BOOTSTRAP_GAMEPLAY_TEST_DB: '1'
+          GAME_DATA_ROOT: tests/compatibility/gameplay
       - run: cargo build --workspace --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --prefix tests/compatibility/socket-client --ignore-scripts --no-audit --no-fund
+      - run: npm test --prefix tests/compatibility/socket-client

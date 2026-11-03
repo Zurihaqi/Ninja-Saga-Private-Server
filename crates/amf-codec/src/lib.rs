@@ -9,6 +9,7 @@ pub enum Value {
     Number(f64),
     Integer(i32),
     String(String),
+    ByteArray(Vec<u8>),
     Array(Vec<Value>),
     Object(Vec<(String, Value)>),
     MixedArray(Vec<(String, Value)>),
@@ -72,6 +73,48 @@ struct Reader<'a> {
     values: usize,
     decoded_string_bytes: usize,
     strings: Vec<String>,
+    objects0: Vec<Option<CachedValue>>,
+    objects3: Vec<Option<CachedValue>>,
+    traits: Vec<Trait>,
+}
+
+struct CachedValue {
+    value: Value,
+    nodes: usize,
+    string_bytes: usize,
+    height: usize,
+}
+
+#[derive(Clone)]
+struct Trait {
+    keys: Vec<String>,
+    dynamic: bool,
+}
+
+fn value_size(value: &Value) -> (usize, usize, usize) {
+    let (mut nodes, mut strings, mut height) = (1usize, 0usize, 0usize);
+    let mut child = |v: &Value| {
+        let (n, s, h) = value_size(v);
+        nodes = nodes.saturating_add(n);
+        strings = strings.saturating_add(s);
+        height = height.max(h.saturating_add(1));
+    };
+    match value {
+        Value::Array(values) => values.iter().for_each(&mut child),
+        Value::Object(fields) | Value::MixedArray(fields) => {
+            for (_, value) in fields {
+                child(value);
+            }
+            for (key, _) in fields {
+                strings = strings.saturating_add(key.len());
+            }
+        }
+        Value::Amf3(value) => child(value),
+        Value::String(value) => strings = value.len(),
+        Value::ByteArray(value) => strings = value.len(),
+        _ => {}
+    }
+    (nodes, strings, height)
 }
 
 impl Reader<'_> {
@@ -148,11 +191,59 @@ impl Reader<'_> {
         Ok(s)
     }
     fn budget(&mut self, depth: usize) -> Result<()> {
-        self.values += 1;
-        if depth > self.limits.max_depth || self.values > self.limits.max_values {
+        self.charge_values(1, depth)
+    }
+    fn charge_values(&mut self, count: usize, depth: usize) -> Result<()> {
+        if depth > self.limits.max_depth
+            || count > self.limits.max_values.saturating_sub(self.values)
+        {
             return Err(Error("value or depth limit exceeded"));
         }
+        self.values += count;
         Ok(())
+    }
+    fn reserve_object(&mut self, amf3: bool) -> usize {
+        let objects = if amf3 {
+            &mut self.objects3
+        } else {
+            &mut self.objects0
+        };
+        let index = objects.len();
+        objects.push(None);
+        index
+    }
+    fn finish_object(&mut self, amf3: bool, index: usize, value: Value) -> Result<Value> {
+        let (nodes, string_bytes, height) = value_size(&value);
+        // Cache copies also consume budgets, so nested objects cannot bypass allocation limits.
+        self.charge_values(nodes, height)?;
+        self.charge_string(string_bytes)?;
+        let cached = CachedValue {
+            value: value.clone(),
+            nodes,
+            string_bytes,
+            height,
+        };
+        let objects = if amf3 {
+            &mut self.objects3
+        } else {
+            &mut self.objects0
+        };
+        objects[index] = Some(cached);
+        Ok(value)
+    }
+    fn reference(&mut self, amf3: bool, index: usize, depth: usize) -> Result<Value> {
+        let objects = if amf3 { &self.objects3 } else { &self.objects0 };
+        let cached = objects
+            .get(index)
+            .ok_or(Error("invalid object reference"))?
+            .as_ref()
+            .ok_or(Error("cyclic object reference not supported"))?;
+        let (nodes, strings, height) = (cached.nodes, cached.string_bytes, cached.height);
+        // The root was charged by value0/value3 already.
+        self.charge_values(nodes - 1, depth.saturating_add(height))?;
+        self.charge_string(strings)?;
+        let objects = if amf3 { &self.objects3 } else { &self.objects0 };
+        Ok(objects[index].as_ref().unwrap().value.clone())
     }
     fn properties(&mut self, depth: usize) -> Result<Vec<(String, Value)>> {
         let mut fields = Vec::new();
@@ -172,12 +263,22 @@ impl Reader<'_> {
             0 => Value::Number(self.number()?),
             1 => Value::Bool(self.byte()? != 0),
             2 => Value::String(self.short_string()?),
-            3 => Value::Object(self.properties(depth)?),
+            3 => {
+                let index = self.reserve_object(false);
+                let value = Value::Object(self.properties(depth)?);
+                self.finish_object(false, index, value)?
+            }
             5 => Value::Null,
             6 => Value::Undefined,
+            7 => {
+                let index = self.u16()? as usize;
+                self.reference(false, index, depth)?
+            }
             8 => {
                 self.u32()?;
-                Value::MixedArray(self.properties(depth)?)
+                let index = self.reserve_object(false);
+                let value = Value::MixedArray(self.properties(depth)?);
+                self.finish_object(false, index, value)?
             }
             10 => {
                 let n = self.u32()? as usize;
@@ -185,10 +286,11 @@ impl Reader<'_> {
                     return Err(Error("array limit exceeded"));
                 }
                 let mut values = Vec::new();
+                let index = self.reserve_object(false);
                 for _ in 0..n {
                     values.push(self.value0(depth + 1)?);
                 }
-                Value::Array(values)
+                self.finish_object(false, index, Value::Array(values))?
             }
             12 => {
                 let n = self.u32()? as usize;
@@ -196,6 +298,8 @@ impl Reader<'_> {
             }
             17 => {
                 self.strings.clear();
+                self.objects3.clear();
+                self.traits.clear();
                 Value::Amf3(Box::new(self.value3(depth + 1)?))
             }
             _ => return Err(Error("unsupported AMF0 marker")),
@@ -218,16 +322,28 @@ impl Reader<'_> {
             }
             5 => Value::Number(self.number()?),
             6 => Value::String(self.string3()?),
+            12 => {
+                let info = self.u29()?;
+                if info & 1 == 0 {
+                    return self.reference(true, (info >> 1) as usize, depth);
+                }
+                let count = (info >> 1) as usize;
+                self.charge_string(count)?;
+                let index = self.reserve_object(true);
+                let value = Value::ByteArray(self.bytes(count)?.to_vec());
+                self.finish_object(true, index, value)?
+            }
             9 => {
                 let info = self.u29()?;
                 if info & 1 == 0 {
-                    return Err(Error("object references not supported by spike"));
+                    return self.reference(true, (info >> 1) as usize, depth);
                 }
                 let n = (info >> 1) as usize;
                 if n > self.limits.max_values.saturating_sub(self.values) {
                     return Err(Error("array limit exceeded"));
                 }
                 let mut fields = Vec::new();
+                let index = self.reserve_object(true);
                 loop {
                     let key = self.string3()?;
                     if key.is_empty() {
@@ -239,7 +355,7 @@ impl Reader<'_> {
                 for _ in 0..n {
                     values.push(self.value3(depth + 1)?);
                 }
-                if fields.is_empty() {
+                let value = if fields.is_empty() {
                     Value::Array(values)
                 } else if values.is_empty() {
                     Value::MixedArray(fields)
@@ -247,33 +363,53 @@ impl Reader<'_> {
                     return Err(Error(
                         "mixed dense and associative AMF3 arrays not supported",
                     ));
-                }
+                };
+                self.finish_object(true, index, value)?
             }
             10 => {
                 let info = self.u29()?;
-                if info & 3 != 3 {
-                    return Err(Error("object and trait references not supported by spike"));
+                if info & 1 == 0 {
+                    return self.reference(true, (info >> 1) as usize, depth);
                 }
-                if info & 4 != 0 {
-                    return Err(Error("externalizable objects not supported"));
-                }
-                let class = self.string3()?;
-                if !class.is_empty() {
-                    return Err(Error("typed objects not supported by spike"));
-                }
-                let count = (info >> 4) as usize;
-                if count > self.limits.max_values.saturating_sub(self.values) {
-                    return Err(Error("property limit exceeded"));
-                }
-                let mut keys = Vec::new();
-                for _ in 0..count {
-                    keys.push(self.string3()?);
-                }
+                let object_trait = if info & 2 == 0 {
+                    let index = (info >> 2) as usize;
+                    let stored = self
+                        .traits
+                        .get(index)
+                        .ok_or(Error("invalid trait reference"))?;
+                    let bytes = stored.keys.iter().map(String::len).sum();
+                    self.charge_string(bytes)?;
+                    self.traits[index].clone()
+                } else {
+                    if info & 4 != 0 {
+                        return Err(Error("externalizable objects not supported"));
+                    }
+                    let class = self.string3()?;
+                    if !class.is_empty() {
+                        return Err(Error("typed objects not supported by spike"));
+                    }
+                    let count = (info >> 4) as usize;
+                    if count > self.limits.max_values.saturating_sub(self.values) {
+                        return Err(Error("property limit exceeded"));
+                    }
+                    let mut keys = Vec::new();
+                    for _ in 0..count {
+                        keys.push(self.string3()?);
+                    }
+                    self.charge_string(keys.iter().map(String::len).sum())?;
+                    let object_trait = Trait {
+                        keys,
+                        dynamic: info & 8 != 0,
+                    };
+                    self.traits.push(object_trait.clone());
+                    object_trait
+                };
+                let index = self.reserve_object(true);
                 let mut fields = Vec::new();
-                for key in keys {
+                for key in object_trait.keys {
                     fields.push((key, self.value3(depth + 1)?));
                 }
-                if info & 8 != 0 {
+                if object_trait.dynamic {
                     loop {
                         let key = self.string3()?;
                         if key.is_empty() {
@@ -282,7 +418,7 @@ impl Reader<'_> {
                         fields.push((key, self.value3(depth + 1)?));
                     }
                 }
-                Value::Object(fields)
+                self.finish_object(true, index, Value::Object(fields))?
             }
             _ => return Err(Error("unsupported AMF3 marker")),
         })
@@ -290,6 +426,7 @@ impl Reader<'_> {
     fn section(&mut self) -> Result<Value> {
         let size = self.u32()?;
         let start = self.pos;
+        self.objects0.clear();
         let value = self.value0(0)?;
         if size != u32::MAX && self.pos - start != size as usize {
             return Err(Error("declared length mismatch"));
@@ -309,6 +446,9 @@ pub fn decode(input: &[u8], limits: Limits) -> Result<Envelope> {
         values: 0,
         decoded_string_bytes: 0,
         strings: Vec::new(),
+        objects0: Vec::new(),
+        objects3: Vec::new(),
+        traits: Vec::new(),
     };
     let version = r.u16()?;
     if version != 0 && version != 3 {
@@ -419,6 +559,13 @@ impl Writer {
             return self.value3(v, depth);
         }
         match v {
+            Value::ByteArray(_) => {
+                self.byte(17)?;
+                if depth >= self.limits.max_depth {
+                    return Err(Error("value or depth limit exceeded"));
+                }
+                self.value3(v, depth + 1)
+            }
             Value::Undefined => self.byte(6),
             Value::Null => self.byte(5),
             Value::Bool(v) => {
@@ -477,6 +624,14 @@ impl Writer {
     }
     fn value3(&mut self, v: &Value, depth: usize) -> Result<()> {
         match v {
+            Value::ByteArray(bytes) => {
+                if bytes.len() > 0xfffffff || bytes.len() > self.limits.max_bytes {
+                    return Err(Error("byte array limit exceeded"));
+                }
+                self.byte(12)?;
+                self.u29(((bytes.len() as u32) << 1) | 1)?;
+                self.put(bytes)
+            }
             Value::Undefined => self.byte(0),
             Value::Null => self.byte(1),
             Value::Bool(v) => self.byte(if *v { 3 } else { 2 }),

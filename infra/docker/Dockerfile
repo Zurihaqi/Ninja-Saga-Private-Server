@@ -4,6 +4,7 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY apps ./apps
 COPY crates ./crates
 COPY tests ./tests
+COPY database ./database
 RUN cargo build --release --locked --workspace
 
 FROM debian:bookworm-slim

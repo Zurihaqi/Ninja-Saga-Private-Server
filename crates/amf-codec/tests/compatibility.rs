@@ -84,6 +84,41 @@ fn all_truncated_prefixes_fail() {
 }
 
 #[test]
+fn php_byte_array_fixture_is_bounded_and_round_trips() {
+    let bytes = include_bytes!("fixtures/amf3-bytes.amf");
+    let message = decode(bytes, Limits::default()).unwrap();
+    assert_eq!(
+        message.bodies[0].data,
+        Value::Amf3(Box::new(Value::Array(vec![Value::ByteArray(
+            b"\x00\x01\xfftest".to_vec()
+        )])))
+    );
+    assert_eq!(encode(&message, Limits::default()).unwrap(), bytes);
+    for length in 0..bytes.len() {
+        assert!(decode(&bytes[..length], Limits::default()).is_err());
+    }
+    let huge = Envelope {
+        version: 0,
+        headers: vec![],
+        bodies: vec![Body {
+            target: "test".into(),
+            response: "/1".into(),
+            data: Value::ByteArray(vec![0; 1024]),
+        }],
+    };
+    assert!(
+        encode(
+            &huge,
+            Limits {
+                max_bytes: 100,
+                ..Limits::default()
+            }
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn bounded_input_and_output() {
     let message = envelope(Value::Array(vec![Value::Array(vec![Value::Null])]));
     let bytes = encode(&message, Limits::default()).unwrap();
@@ -151,13 +186,136 @@ fn string_references_are_bounded_and_checked() {
 }
 
 #[test]
-fn unsupported_reference_fails_explicitly() {
+fn invalid_reference_fails_explicitly() {
     let mut bytes = encode(&envelope(Value::Null), Limits::default()).unwrap();
     bytes.pop();
     bytes.extend_from_slice(&[17, 10, 0]);
     assert_eq!(
         decode(&bytes, Limits::default()).unwrap_err().0,
-        "object and trait references not supported by spike"
+        "invalid object reference"
+    );
+}
+
+#[test]
+fn pinned_php_verified_object_array_and_trait_references() {
+    let bytes = include_bytes!("fixtures/amf3-references.amf");
+    let decoded = decode(bytes, Limits::default()).unwrap();
+    let object = |n| Value::Object(vec![("x".into(), Value::Integer(n))]);
+    assert_eq!(
+        decoded.bodies[0].data,
+        Value::Amf3(Box::new(Value::Array(vec![
+            object(7),
+            object(9),
+            object(7),
+            Value::Array(vec![Value::Integer(11)]),
+            Value::Array(vec![Value::Integer(11)])
+        ])))
+    );
+    // Encoding expands references; semantics, not byte identity, are the contract here.
+    assert_eq!(
+        decode(
+            &encode(&decoded, Limits::default()).unwrap(),
+            Limits::default()
+        )
+        .unwrap(),
+        decoded
+    );
+    let decoded = decode(
+        include_bytes!("fixtures/amf0-references.amf"),
+        Limits::default(),
+    )
+    .unwrap();
+    let object = Value::Object(vec![("x".into(), Value::Number(7.0))]);
+    assert_eq!(
+        decoded.bodies[0].data,
+        Value::Array(vec![
+            object.clone(),
+            object,
+            Value::Array(vec![Value::Bool(true)]),
+            Value::Array(vec![Value::Bool(true)])
+        ])
+    );
+}
+
+fn raw_body(payload: &[u8]) -> Vec<u8> {
+    let mut bytes = encode(&envelope(Value::Null), Limits::default()).unwrap();
+    bytes.pop();
+    bytes.extend_from_slice(payload);
+    bytes
+}
+
+#[test]
+fn cycles_and_bad_trait_indices_are_rejected() {
+    for payload in [
+        vec![10, 0, 0, 0, 1, 7, 0, 0],
+        vec![17, 9, 3, 1, 9, 0],
+        vec![17, 10, 19, 1, 3, b'x', 10, 0],
+    ] {
+        assert_eq!(
+            decode(&raw_body(&payload), Limits::default())
+                .unwrap_err()
+                .0,
+            "cyclic object reference not supported"
+        );
+    }
+    assert_eq!(
+        decode(&raw_body(&[17, 10, 1]), Limits::default())
+            .unwrap_err()
+            .0,
+        "invalid trait reference"
+    );
+    assert_eq!(
+        decode(&raw_body(&[7, 0, 0]), Limits::default())
+            .unwrap_err()
+            .0,
+        "invalid object reference"
+    );
+}
+
+#[test]
+fn object_reference_expansion_respects_depth_value_and_string_limits() {
+    // An array containing a completed one-element array, then a reference to it.
+    let bytes = raw_body(&[17, 9, 5, 1, 9, 3, 1, 1, 9, 2]);
+    assert!(decode(&bytes, Limits::default()).is_ok());
+    assert!(
+        decode(
+            &bytes,
+            Limits {
+                max_values: 9,
+                ..Limits::default()
+            }
+        )
+        .is_err()
+    );
+    // Reinsert a cached array one level deeper than its original occurrence.
+    let bytes = raw_body(&[17, 9, 5, 1, 9, 3, 1, 1, 9, 3, 1, 9, 2]);
+    assert!(
+        decode(
+            &bytes,
+            Limits {
+                max_depth: 3,
+                ..Limits::default()
+            }
+        )
+        .is_err()
+    );
+    let mut payload = vec![17, 9, 0x81, 0x4b, 1, 10, 19, 1, 3, b'x', 6, 0x81, 1];
+    payload.extend_from_slice(&[b'z'; 64]);
+    for _ in 0..100 {
+        payload.extend_from_slice(&[10, 2]);
+    }
+    let bytes = raw_body(&payload);
+    assert_eq!(
+        decode(
+            &bytes,
+            Limits {
+                max_bytes: 1024,
+                ..Limits::default()
+            }
+        )
+        .unwrap_err()
+        .0,
+        "decoded string budget exceeded"
     );
 }
 

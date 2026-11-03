@@ -1,22 +1,65 @@
-//! Connectivity spike: only the upstream diagnostic Game.getVersion method is implemented.
+//! Legacy AMF gateway, persistent gameplay services and local client asset delivery.
 use amf_codec::{Body, Envelope, Limits, Value};
 use axum::{
     Router,
     body::Bytes,
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::any,
 };
+mod academy;
+mod account;
+mod characters;
+mod consumables;
+mod crafting;
+mod economy;
+mod exams;
+mod inventory;
+mod missions;
+mod pets;
+mod recruits;
+mod senjutsu;
+mod skillsets;
+mod talents;
+use persistence::MySqlPool;
 
-pub fn router() -> Router {
-    Router::new()
-        .route("/amf", any(gateway))
-        .route("/gateway.php", any(gateway))
-        .layer(DefaultBodyLimit::max(Limits::default().max_bytes))
+#[derive(Clone, Default)]
+pub struct GameState {
+    pub database: Option<MySqlPool>,
+    battles: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<i64, missions::Battle>>>,
+}
+impl GameState {
+    pub fn with_database(database: Option<MySqlPool>) -> Self {
+        Self {
+            database,
+            ..Self::default()
+        }
+    }
 }
 
-async fn gateway(bytes: Bytes) -> Response {
+pub fn router() -> Router {
+    configured_router(GameState::default())
+}
+
+pub fn configured_router(state: GameState) -> Router {
+    let mut router = Router::new()
+        .route("/amf", any(gateway))
+        .route("/gateway.php", any(gateway))
+        .route("/api/id-custom-color", axum::routing::get(|| async {axum::Json(serde_json::json!({"data":{}}))}))
+        .route("/crossdomain.xml", axum::routing::get(|| async { ([(header::CONTENT_TYPE,"application/xml")],"<cross-domain-policy><allow-access-from domain=\"127.0.0.1\" secure=\"false\"/><allow-access-from domain=\"localhost\" secure=\"false\"/></cross-domain-policy>") }))
+        .layer(DefaultBodyLimit::max(Limits::default().max_bytes))
+        .with_state(state);
+    if let Ok(root) = std::env::var("GAME_DATA_ROOT") {
+        router = router.nest_service("/game_data", tower_http::services::ServeDir::new(root));
+    }
+    if let Ok(root) = std::env::var("CLIENT_ASSET_ROOT") {
+        router = router.fallback_service(tower_http::services::ServeDir::new(root));
+    }
+    router
+}
+
+async fn gateway(State(state): State<GameState>, bytes: Bytes) -> Response {
     if bytes.is_empty() {
         return "AMF Gateway Ready".into_response();
     }
@@ -31,22 +74,25 @@ async fn gateway(bytes: Bytes) -> Response {
         }
     };
     let wrap = request.version == 3;
-    let bodies = request
-        .bodies
-        .into_iter()
-        .map(|body| {
-            let data = dispatch(&body.target, wrap);
-            Body {
-                target: format!("{}/onResult", body.response),
-                response: String::new(),
-                data: if wrap {
-                    Value::Amf3(Box::new(data))
-                } else {
-                    data
-                },
-            }
-        })
-        .collect();
+    let mut bodies = Vec::new();
+    for body in request.bodies {
+        let data = if body.target.ends_with(".getVersion") {
+            dispatch(&body.target, wrap)
+        } else {
+            let args = account::arguments(&body.data);
+            let result = account::dispatch(&state, &body.target, &args).await;
+            account::to_amf(&result, wrap)
+        };
+        bodies.push(Body {
+            target: format!("{}/onResult", body.response),
+            response: String::new(),
+            data: if wrap {
+                Value::Amf3(Box::new(data))
+            } else {
+                data
+            },
+        });
+    }
     match amf_codec::encode(
         &Envelope {
             version: 0,
@@ -106,12 +152,512 @@ fn dispatch(target: &str, amf3: bool) -> Value {
 
 #[cfg(test)]
 mod tests {
+    mod extension;
     use super::*;
     use axum::{
         body::{Body as HttpBody, to_bytes},
         http::Request,
     };
     use tower::ServiceExt;
+
+    async fn amf_call(app: &Router, target: &str, args: serde_json::Value) -> serde_json::Value {
+        let request = Envelope {
+            version: 3,
+            headers: vec![],
+            bodies: vec![amf_codec::Body {
+                target: target.into(),
+                response: "/1".into(),
+                data: Value::Amf3(Box::new(account::to_amf(&args, true))),
+            }],
+        };
+        let bytes = amf_codec::encode(&request, Limits::default()).unwrap();
+        let response = app
+            .clone()
+            .oneshot(Request::post("/amf").body(HttpBody::from(bytes)).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let message = amf_codec::decode(&bytes, Limits::default()).unwrap();
+        account::arguments(&Value::Array(vec![message.bodies[0].data.clone()])).remove(0)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires isolated migrated MySQL DATABASE_URL"]
+    async fn persistent_account_character_and_ownership_flow() {
+        use persistence::sqlx;
+        use serde_json::json;
+        let pool = persistence::connect(&std::env::var("DATABASE_URL").unwrap())
+            .await
+            .unwrap();
+        if std::env::var("BOOTSTRAP_GAMEPLAY_TEST_DB").as_deref() == Ok("1") {
+            let database: String = sqlx::query_scalar("SELECT DATABASE()")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(
+                database, "ninja_ci_test",
+                "Refusing to bootstrap any other database"
+            );
+            let mut connection = pool.acquire().await.unwrap();
+            sqlx::query("SET FOREIGN_KEY_CHECKS=0")
+                .execute(&mut *connection)
+                .await
+                .unwrap();
+            sqlx::raw_sql(include_str!("../../../database/schema/mysql.sql"))
+                .execute(&mut *connection)
+                .await
+                .unwrap();
+            sqlx::query("SET FOREIGN_KEY_CHECKS=1")
+                .execute(&mut *connection)
+                .await
+                .unwrap();
+            sqlx::raw_sql(include_str!("../../../database/fixtures/gameplay.sql"))
+                .execute(&mut *connection)
+                .await
+                .unwrap();
+        }
+        let app = configured_router(GameState {
+            database: Some(pool.clone()),
+            ..GameState::default()
+        });
+        let username = format!("test_{}", authentication::random_hex().unwrap());
+        let registered = amf_call(
+            &app,
+            "SystemLogin.registerUser",
+            json!([
+                username,
+                format!("{username}@example.invalid"),
+                "NinjaTest123!",
+                ""
+            ]),
+        )
+        .await;
+        assert_eq!(registered["status"], 1, "{registered}");
+        assert_eq!(
+            amf_call(
+                &app,
+                "SystemLogin.registerUser",
+                json!([username, "other@example.invalid", "NinjaTest123!", ""])
+            )
+            .await["status"],
+            2
+        );
+        let login = amf_call(
+            &app,
+            "SystemLogin.loginUser",
+            json!([
+                username,
+                "jo+n7pAgPZwhDMCN9reD8w==",
+                "123456",
+                0,
+                0,
+                "0123456789abcdef",
+                0,
+                0,
+                12
+            ]),
+        )
+        .await;
+        assert_eq!(login["status"], 1, "{login}");
+        let uid = login["uid"].as_u64().unwrap();
+        let key = login["sessionkey"].as_str().unwrap();
+        assert_eq!(
+            amf_call(
+                &app,
+                "SystemLogin.loginUser",
+                json!([
+                    username,
+                    "invalid",
+                    "123456",
+                    0,
+                    0,
+                    "0123456789abcdef",
+                    0,
+                    0,
+                    12
+                ])
+            )
+            .await["status"],
+            2
+        );
+        // Actual AIR CharacterCreate wraps its params, and NetConnection wraps again.
+        let created = amf_call(
+            &app,
+            "CharacterService.characterRegister",
+            json!([[[
+                uid,
+                authentication::registration_hash(key),
+                username,
+                0,
+                1,
+                "0|0",
+                1
+            ]]]),
+        )
+        .await;
+        assert_eq!(created["status"], 1, "{created}");
+        let list = amf_call(
+            &app,
+            "SystemLogin.getAllCharacters",
+            json!([uid, login["hash"]]),
+        )
+        .await;
+        assert_eq!(list["total_characters"], 1, "{list}");
+        let id = list["account_data"][0]["char_id"].as_u64().unwrap();
+        let loaded = amf_call(&app, "SystemLogin.getCharacterData", json!([id, key])).await;
+        assert_eq!(loaded["status"], 1, "{loaded}");
+        assert_eq!(loaded["character_inventory"]["char_skills"], "skill_13");
+        assert_eq!(loaded["character_data"]["character_gold"], 1000);
+        let info = amf_call(
+            &app,
+            "CharacterService.getInfo",
+            serde_json::json!([id, key, id, "char"]),
+        )
+        .await;
+        assert_eq!(info["status"], 1, "{info}");
+        assert_eq!(info["character_sets"]["skills"], "skill_13");
+        assert_eq!(
+            amf_call(&app, "SystemLogin.getCharacterData", json!([id, "wrong"])).await["error"],
+            "Invalid session key"
+        );
+        let equip = amf_call(
+            &app,
+            "CharacterService.equipSet",
+            json!([
+                id,
+                key,
+                "wpn_01",
+                "back_01",
+                "set_01_0",
+                "accessory_01",
+                "hair_01_0",
+                "1|2",
+                "3|4"
+            ]),
+        )
+        .await;
+        assert_eq!(equip["status"], 1, "{equip}");
+        assert_eq!(
+            amf_call(
+                &app,
+                "CharacterService.equipSet",
+                json!([
+                    id,
+                    key,
+                    "wpn_NOT_OWNED",
+                    "back_01",
+                    "set_01_0",
+                    "accessory_01",
+                    "hair_01_0",
+                    "1|2",
+                    "3|4"
+                ])
+            )
+            .await["status"],
+            2
+        );
+        let reloaded = amf_call(&app, "SystemLogin.getCharacterData", json!([id, key])).await;
+        assert_eq!(reloaded["character_sets"]["hair_color"], "1|2");
+        let allocated = amf_call(
+            &app,
+            "CharacterService.setPoints",
+            json!([[id, key, 1, 0, 0, 0, 0, 0]]),
+        )
+        .await;
+        assert_eq!(allocated, json!({"status":1,"error":0}));
+        for invalid in [
+            json!([id, key, 2, 0, 0, 0, 0, 0]),
+            json!([id, key, -1, 0, 0, 0, 0, 2]),
+            json!([id, key, 0.5, 0, 0, 0, 0, 0.5]),
+            json!([id, key, 1, 0, 0, 0, 0]),
+            json!([id, key, null, 0, 0, 0, 0, 1]),
+        ] {
+            assert_eq!(
+                amf_call(&app, "CharacterService.setPoints", invalid).await["status"],
+                2
+            );
+        }
+        assert_eq!(
+            amf_call(
+                &app,
+                "CharacterService.setPoints",
+                json!([id, "wrong", 0, 1, 0, 0, 0, 0])
+            )
+            .await["status"],
+            0
+        );
+        let allocated = amf_call(&app, "SystemLogin.getCharacterData", json!([id, key])).await;
+        assert_eq!(allocated["character_points"]["atrrib_wind"], 1);
+        assert_eq!(allocated["character_points"]["atrrib_free"], 0);
+        let enemy = sqlx::query("SELECT hp,agility FROM enemies WHERE enemy_id='ene_01'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        use persistence::Row;
+        let stats = format!(
+            "id:ene_01|hp:{}|agility:{}",
+            enemy.get::<i32, _>("hp"),
+            enemy.get::<i32, _>("agility")
+        );
+        let bad_start = amf_call(
+            &app,
+            "BattleSystem.startMission",
+            json!([id, "msn_1", "ene_fake", stats, "", "", key]),
+        )
+        .await;
+        assert_eq!(bad_start["error"], "Invalid enemies");
+        let token = amf_call(
+            &app,
+            "BattleSystem.startMission",
+            json!([id, "msn_1", "ene_01", stats, "", "", key]),
+        )
+        .await;
+        assert!(token.is_string(), "{token}");
+        assert_eq!(
+            token.as_str().unwrap().len(),
+            10,
+            "AIR requires a ten-character battle token"
+        );
+        let finish_args = json!([id, "msn_1", token, "", 0, key, [], null]);
+        let (first, duplicate) = tokio::join!(
+            amf_call(&app, "BattleSystem.finishMission", finish_args.clone()),
+            amf_call(&app, "BattleSystem.finishMission", finish_args)
+        );
+        assert!(
+            first["status"] == 1 || duplicate["status"] == 1,
+            "{first} / {duplicate}"
+        );
+        assert!(
+            first["status"] == 0 || duplicate["status"] == 0,
+            "Duplicate rewards accepted"
+        );
+        let after_mission = amf_call(&app, "SystemLogin.getCharacterData", json!([id, key])).await;
+        assert_eq!(after_mission["character_data"]["character_gold"], 1020);
+        assert_eq!(after_mission["character_data"]["character_xp"], 20);
+        assert_eq!(after_mission["character_data"]["character_level"], 2);
+        assert_eq!(
+            amf_call(
+                &app,
+                "CharacterService.setPoints",
+                json!([id, key, 1, 0, 0, 0, 0, 1])
+            )
+            .await["status"],
+            1
+        );
+        // The real profile permits reset/reallocation; repeat saves must stay idempotent.
+        for _ in 0..2 {
+            assert_eq!(
+                amf_call(
+                    &app,
+                    "CharacterService.setPoints",
+                    json!([id, key, 0, 2, 0, 0, 0, 0])
+                )
+                .await["status"],
+                1
+            );
+        }
+        // A new login rotates the persistent key; stale sessions cannot load the character.
+        let login2 = amf_call(
+            &app,
+            "SystemLogin.loginUser",
+            json!([
+                username,
+                "jo+n7pAgPZwhDMCN9reD8w==",
+                "123456",
+                0,
+                0,
+                "0123456789abcdef",
+                0,
+                0,
+                12
+            ]),
+        )
+        .await;
+        assert_eq!(login2["status"], 1);
+        assert_eq!(
+            amf_call(&app, "SystemLogin.getCharacterData", json!([id, key])).await["status"],
+            0
+        );
+        assert_eq!(
+            amf_call(
+                &app,
+                "SystemLogin.getCharacterData",
+                json!([id, login2["sessionkey_b64"]])
+            )
+            .await["status"],
+            1
+        );
+        let fresh_app = configured_router(GameState::with_database(Some(pool.clone())));
+        let persisted = amf_call(
+            &fresh_app,
+            "SystemLogin.getCharacterData",
+            json!([id, login2["sessionkey"]]),
+        )
+        .await;
+        assert_eq!(persisted["character_data"]["character_gold"], 1020);
+        assert_eq!(persisted["character_points"]["atrrib_fire"], 2);
+        assert_eq!(persisted["character_points"]["atrrib_wind"], 0);
+        assert_eq!(persisted["character_points"]["atrrib_free"], 0);
+        assert_eq!(
+            amf_call(
+                &fresh_app,
+                "BattleSystem.finishMission",
+                json!([id, "msn_1", token, "", 0, login2["sessionkey"], [], null])
+            )
+            .await["status"],
+            0
+        );
+        // Complete ordinary shop -> equip -> sell and academy -> equip -> preset flows.
+        let key = login2["sessionkey"].as_str().unwrap();
+        let item=sqlx::query("SELECT item_id,price_gold FROM items WHERE category='weapon' AND item_id<>'wpn_01' AND level<=2 AND premium=0 AND price_tokens=0 AND price_gold>0 AND price_gold<=500 ORDER BY price_gold,item_id LIMIT 1").fetch_one(&pool).await.unwrap();
+        let item_id: String = item.get("item_id");
+        let price = i64::from(item.get::<i32, _>("price_gold"));
+        let bought = amf_call(
+            &fresh_app,
+            "CharacterService.buyItem",
+            json!([[id, key, item_id, 2]]),
+        )
+        .await;
+        assert_eq!(bought["status"], 1, "{bought}");
+        assert_eq!(bought["data"]["character_gold"], 1020 - price * 2);
+        assert_eq!(
+            amf_call(
+                &fresh_app,
+                "CharacterService.buyItem",
+                json!([id, key, item_id, 1000000])
+            )
+            .await["status"],
+            3
+        );
+        assert_eq!(
+            amf_call(
+                &fresh_app,
+                "CharacterService.equipSet",
+                json!([
+                    id,
+                    key,
+                    item_id,
+                    "back_01",
+                    "set_01_0",
+                    "accessory_01",
+                    "hair_01_0",
+                    "1|2",
+                    "3|4"
+                ])
+            )
+            .await["status"],
+            1
+        );
+        let equipped = amf_call(&fresh_app, "SystemLogin.getCharacterData", json!([id, key])).await;
+        assert_eq!(equipped["character_sets"]["weapon"], item_id);
+        assert!(
+            equipped["character_inventory"]["char_weapons"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("{item_id}:2"))
+        );
+        let sold = amf_call(
+            &fresh_app,
+            "CharacterService.sellItem",
+            json!([[id, key, item_id, 1]]),
+        )
+        .await;
+        let after_sale = 1020 - price * 2 + price / 2;
+        assert_eq!(sold["status"], 1, "{sold}");
+        assert_eq!(sold["data"]["character_gold"], after_sale);
+        let skill=sqlx::query("SELECT skill_id,price_gold FROM skills WHERE element=2 AND level<=2 AND premium=0 AND price_tokens=0 AND price_gold<=100 ORDER BY price_gold,skill_id LIMIT 1").fetch_one(&pool).await.unwrap();
+        let skill_id: String = skill.get("skill_id");
+        let skill_price = i64::from(skill.get::<i32, _>("price_gold"));
+        let learned = amf_call(
+            &fresh_app,
+            "CharacterService.buySkill",
+            json!([[key, id, skill_id]]),
+        )
+        .await;
+        assert_eq!(learned["status"], 1, "{learned}");
+        assert_eq!(learned["data"]["character_gold"], after_sale - skill_price);
+        assert_eq!(learned["data"]["character_element_2"], 2);
+        assert_eq!(
+            amf_call(
+                &fresh_app,
+                "CharacterService.buySkill",
+                json!([key, id, skill_id])
+            )
+            .await["status"],
+            2
+        );
+        let skills = format!("skill_13,{skill_id}");
+        assert_eq!(
+            amf_call(
+                &fresh_app,
+                "CharacterService.equipSkillSet",
+                json!([id, key, skills])
+            )
+            .await["status"],
+            1
+        );
+        assert_eq!(
+            amf_call(
+                &fresh_app,
+                "CharacterService.getSkillSets",
+                json!([id, key])
+            )
+            .await["skillsets"],
+            json!([])
+        );
+        assert_eq!(
+            amf_call(
+                &fresh_app,
+                "CharacterService.createSkillSet",
+                json!([id, key])
+            )
+            .await["status"],
+            2
+        );
+        sqlx::query("UPDATE users SET account_type=1 WHERE id=?")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let preset = amf_call(
+            &fresh_app,
+            "CharacterService.createSkillSet",
+            json!([id, key]),
+        )
+        .await;
+        assert_eq!(preset["status"], 1, "{preset}");
+        let preset_id = preset["skillsets"][0]["id"].as_u64().unwrap();
+        let saved = amf_call(
+            &fresh_app,
+            "CharacterService.saveSkillSet",
+            json!([id, key, preset_id, skill_id]),
+        )
+        .await;
+        assert_eq!(saved["status"], 1, "{saved}");
+        assert_eq!(saved["skillsets"][0]["skills"], skill_id);
+        let final_app = configured_router(GameState::with_database(Some(pool.clone())));
+        let final_state =
+            amf_call(&final_app, "SystemLogin.getCharacterData", json!([id, key])).await;
+        assert_eq!(final_state["character_sets"]["skills"], skill_id);
+        assert_eq!(
+            final_state["character_data"]["character_gold"],
+            after_sale - skill_price
+        );
+        assert!(
+            final_state["character_inventory"]["char_skills"]
+                .as_str()
+                .unwrap()
+                .split(',')
+                .any(|s| s == skill_id)
+        );
+        extension::progression_and_companions(&final_app, &pool, id, key).await;
+        sqlx::query("DELETE FROM users WHERE id=?")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn gateway_matches_reference_php_bytes() {

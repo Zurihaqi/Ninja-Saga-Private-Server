@@ -1,0 +1,5 @@
+[
+  {"id":"item_01","type":"item","level":1,"usable":false},
+  {"id":"essential_03","type":"essential","level":1,"usable":true},
+  {"id":"essential_12","type":"essential","level":1,"usable":true}
+]

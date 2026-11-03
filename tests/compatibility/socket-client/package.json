@@ -1,0 +1,8 @@
+{
+  "name": "ninja-saga-legacy-client-check",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Development-only Socket.IO 2 client interoperability check",
+  "scripts": { "test": "node smoke.cjs" },
+  "dependencies": { "socket.io-client": "2.5.0" }
+}

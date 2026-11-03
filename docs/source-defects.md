@@ -15,5 +15,10 @@ All findings refer to the pinned reference; syntax checks do not establish runti
 | Admin email privilege | User::canAccessPanel permits a specific email address as well as type 99; verify registration/authorization consequences before porting. |
 | Crew aliases / CSRF | Root aliases lack the same CSRF exemptions as prefixed routes. Runtime requests must establish actual behavior. |
 | AMF null array slot | SabreAMF AMF0 strict-array serialization emits undefined for PHP null slots due to `isset`. Golden fixture records this. |
+| Event seed migration | Original event inserts omit required `image_url`; reference bootstrap relaxes session SQL mode for those inserts without changing the exported schema. |
+| Exam promotion before rewards | Chunin/Jounin stage completion changes rank before the explicit promotion call; that call then takes the replay path and skips rewards. Rust saves rank and rewards in one explicit promotion transaction. |
+| Talent catalog mismatch | Seeded `talents.talent_id` values are leveled skill IDs, but discovery receives talent types (`de`, etc.). Rust uses the same `talent_shop`, `talent_info` and `talent_description` configuration as the client. |
+| Equipped forging base | PHP can reset an equipped base without removing its inventory copy, permitting repeated forging. Rust consumes exactly one base and resets its equipped slot within the same transaction. |
+| Recruit capacity after debit | PHP deducts recruitment cost before checking the two-teammate cap. Rust checks the squad first and debits/inserts atomically. |
 
 Detailed source links: `inventory/`, `protocols/amf.md`, `protocols/socket-io.md`.
