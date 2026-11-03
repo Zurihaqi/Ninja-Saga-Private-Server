@@ -28,7 +28,7 @@ jobs:
         env:
           DATABASE_URL: mysql://root:ci-only-password@127.0.0.1:3306/ninja_ci_test
           BOOTSTRAP_GAMEPLAY_TEST_DB: '1'
-          GAME_DATA_ROOT: tests/compatibility/gameplay
+          GAME_DATA_ROOT: ${{ github.workspace }}/tests/compatibility/gameplay
       - run: cargo build --workspace --locked
       - uses: actions/setup-node@v4
         with:
