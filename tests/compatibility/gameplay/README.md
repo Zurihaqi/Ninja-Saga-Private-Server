@@ -1,8 +1,8 @@
 # Headless gameplay regression
 
-The ignored integration test sends AMF3 envelopes through the gateway and checks MySQL state. It covers accounts/characters, points, missions and duplicate rewards, shops, normal/advanced academy, presets, all four exams, pets, NPC recruitment, crafting, consumables, talents, Sage Mode and classes. It never launches, records or controls the AIR client.
+The ignored integration test sends real AMF envelopes through the gateway and checks MySQL. It covers core progression, shops/animations, pets/paid learning, hunting/markets/daily systems, friends/mail/Shadow War, representative events/admin APIs and authorization rejection. It never launches or records the client. Realtime lifecycle/router tests are separate in the chat/PvP crates and use mocked characters.
 
-Create a dedicated empty MySQL database named `ninja_ci_test`, then set:
+The regression changes global event/config fixtures as well as synthetic accounts. It refuses every schema except dedicated `ninja_ci_test` and `ninja_ci_reference_test`. Create an isolated test database and run:
 
 ```powershell
 $env:DATABASE_URL = 'mysql://USER:PASSWORD@127.0.0.1:3307/ninja_ci_test'
@@ -11,10 +11,8 @@ $env:GAME_DATA_ROOT = Join-Path $PWD 'tests/compatibility/gameplay'
 cargo test -p game-server --lib persistent_account_character_and_ownership_flow --locked -- --ignored --nocapture
 ```
 
-Replace placeholders with isolated test credentials. Bootstrap refuses any database name other than `ninja_ci_test`; it creates schema and imports synthetic fixtures. CI runs the same command against its MySQL service on port 3306.
+Replace placeholders with isolated credentials. Bootstrap creates the baseline schema, additive migrations and synthetic fixtures. CI provides MySQL on port 3306 and uses the same command. For original catalogs, import the export into `ninja_ci_reference_test`, retain bootstrap for supplementary fixtures and point `GAME_DATA_ROOT` at original JSON.
 
-To test existing imported original catalogs in an isolated development database, unset `BOOTSTRAP_GAMEPLAY_TEST_DB`, set `DATABASE_URL` to that test database and point `GAME_DATA_ROOT` at the original game-data directory. Never run this against a production database.
+The development branch retains `scripts/test-gameplay.ps1` and its `-ReferenceCatalog` helper; those workstation scripts are excluded here. Accounts are uniquely named and deleted on success; failures can leave test accounts for diagnosis. All global fixture changes stay in the test schema. Never target a playable or production database.
 
-Each run creates a uniquely named synthetic account, exercises state changes and deletes the account on success. Failed runs can leave that account for diagnosis. Existing player accounts are not changed. Account/mission tests live in `apps/game-server/src/lib.rs`; extended progression is in `apps/game-server/src/tests/extension.rs`.
-
-The checked-in JSON and SQL are minimal synthetic data; `mission.json` follows the first reference mission's enemy shape. They do not contain SWF assets. The broader development branch retains workstation PowerShell helpers and PHP/Node fixture generators; these are excluded from runtime review. Rendering and combat animation remain actual-client acceptance checks.
+Coverage lives in `apps/game-server/src/lib.rs`, `src/tests/extension.rs` and `src/tests/player_actions.rs`. Original-catalog requirements are read from their definitions rather than assumed from synthetic fixtures. Actual-client rendering, complete event coverage and full two-client multiplayer acceptance remain open.

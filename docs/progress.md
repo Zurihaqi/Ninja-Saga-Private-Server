@@ -1,29 +1,27 @@
-# Runtime progress — 2026-11-03
+# Runtime progress — 2026-11-04
 
-Status: **local PvE preview; production promotion pending**. Runtime review is based on development checkpoint `bd31536a` and subsequent documentation. Original `main` is preserved on `legacy/php-node` at `ecf9012d885d1c89fd5f42791eed4f37f90f2edd`. This PR has not replaced or deployed `main`.
+Status: **gameplay integration and client acceptance in progress**. [Draft PR #1](https://github.com/Zurihaqi/Ninja-Saga-Private-Server/pull/1) incorporates development checkpoint `68dbf2d7`. Original `main` remains preserved on `legacy/php-node` at `ecf9012d885d1c89fd5f42791eed4f37f90f2edd`. The PR has not been merged or deployed.
 
-Review: [draft PR #1](https://github.com/Zurihaqi/Ninja-Saga-Private-Server/pull/1). Runtime code and packaging checkpoint `05045df4` passed the checks below; subsequent progress-link updates are documentation-only.
-
-| Flow | Evidence |
+| Area | Current evidence |
 |---|---|
-| Accounts, characters, village, first mission | AIR checks; user-confirmed battle/completion; headless persistence/replay checks |
-| Equipment, points, shops, academy and presets | Headless ownership, transaction and save/reload checks |
-| Four rank exams through Ninja Tutor | Headless stage gates and concurrent promotion claims |
-| Pets and NPC recruits | Headless buying/equipment/rename/release, pet XP and squad consumption |
-| Blacksmith and consumables | 65 recipes implemented; gold forging/material rollback and consumption tested |
-| Advanced academy and classes | Headless prerequisite/replacement and class-change checks |
-| Talents and Sage Mode | Headless discovery, upgrades, resets, TP packages, Sage equipment and persistence |
+| Core PvE/progression | Accounts, equipment, points, shops, academy/presets, missions, four exams, talents, Sage Mode and crafting have headless persistence checks; first mission verified in AIR and reported in Ruffle desktop |
+| Pets/inventory | Villa/combining, feeding, paid skill learning, animation buying/use, consumables and account tools implemented and checked headlessly |
+| PvE/economy modes | Hunting, Eudemon, daily rewards, markets and Shadow War implemented; representative MySQL flows pass |
+| Social | Friends, recruitment and mail implemented; clan/crew HTTP APIs exist, while the AMF bridge still has reference-style placeholder behavior requiring client integration |
+| Events/admin | Nine seasonal handlers, packages/giveaways/leaderboards, administrative REST API and React dashboard implemented; representative checks, not exhaustive event/client acceptance |
+| Realtime | Chat and PvP now have authenticated polling implementations and lifecycle/router tests. Actual two-client acceptance and required WebSocket support remain open |
+| Browser/runtime | React/Ruffle host and admin frontend build; Ruffle assets/licenses generated from the locked dependency. Runtime image definitions package all three servers, import/migration utilities and built web assets |
 
-The runtime-only branch passes formatting, strict Clippy, 20 unit/fixture tests, explicit MySQL integration against isolated CI fixtures, and the optimized release build for both runtime binaries. The full development workspace previously passed 28 regular tests and MySQL integration with original catalogs as well. Excluding socket experiments accounts for the lower runtime test count. Headless success does not establish rendered/client acceptance. Hosted CI and container execution remain separate gates.
+This integration closes missing-session clan/crew token issuance, saves token rotations atomically, removes built-in admin/chat secrets and requires bcrypt-backed admin passwords. Local admin access uses the explicitly configured secret or an admin account. New pet learning has an additive schema migration; existing pet unlock behavior is retained.
 
-## Remaining gameplay, in priority order
+Development validation passes 32 regular Rust tests, strict Clippy, formatting, minimal-fixture and original-catalog MySQL regressions, and the browser build. Live checks verified the game/browser host, authenticated admin overview and chat/PvP liveness. Runtime-only verification and hosted CI are recorded in the PR; the four excluded protocol-experiment tests account for the lower runtime test count.
 
-1. Training/secondary battle modes supplying TP, SS and materials, completing the progression economy.
-2. Friend recruitment and friends/mail/clans/crews.
-3. Production PvP/chat and actual Flash transport compatibility.
-4. Events, pet training/combining, secondary inventory/account features and administration.
-5. Actual AIR acceptance of the implemented later progression panels and battles.
+## Remaining work
 
-Complete gameplay loops take priority over lower-priority polish. No completion percentage is claimed. Unsupported methods return errors. Normal combat is simulated by the client, with server-side session, catalog and reward checks.
+1. Complete real-client progression and natural TP/SS/material earning; finish staged S missions and remaining actions found through that audit. `getMissionSData` currently provides the reference's initial data contract.
+2. Connect and accept clan/crew panels against the HTTP services; finish the AMF behavior actually required by the client.
+3. Accept complete chat/PvP flows with two clients, including rewards, spectators and reconnects; confirm polling suffices or add the required WebSocket support.
+4. Accept later exams, pets, events and administration in AIR/Ruffle/browser. A frontend build and headless tests do not establish full panel compatibility.
+5. Verify containers, migrations, asset delivery, backups/restore and rollback in staging. Readiness still returns 503; battle sessions remain in memory and clear on restart.
 
-Readiness remains 503; mission tokens remain in memory. Hosted CI, containers, staging provisioning, asset delivery, backups/restore, rollback and deployment hardening require acceptance on the reviewed revision/environment. See [production acceptance](production-readiness.md).
+See [production acceptance](production-readiness.md). No full-parity claim or completion percentage is made. Development helpers, original assets, credentials, protocol experiments and migration task notes remain excluded from this branch.

@@ -21,6 +21,6 @@ The archive matches original commit `ecf9012d885d1c89fd5f42791eed4f37f90f2edd`. 
 - [ ] Verify configuration, credentials, backups, restore and rollback using staging data.
 - [ ] Review and approve the PR before merging; decide deployment separately.
 
-Tests and CI remain as release evidence. Workstation credentials, downloaded assets, logs, build outputs, protocol experiments, PHP/Node fixture generators and migration task notes are excluded. The image contains the game executable and explicit import utility.
+Tests and CI remain as release evidence. Workstation credentials, original downloaded assets, build outputs, protocol experiments, fixture generators and migration task notes are excluded. Actual game/chat/PvP services and browser/admin source are included. Ruffle assets/licenses are generated during build; the image includes built web assets and explicit import/migration utilities.
 
 This is written promotion policy. GitHub branch protection/rulesets have not been configured or verified by this change; enforcement must be checked separately.

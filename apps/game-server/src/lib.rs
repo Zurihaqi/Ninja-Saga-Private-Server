@@ -10,24 +10,48 @@ use axum::{
 };
 mod academy;
 mod account;
+mod admin;
+mod animations;
 mod characters;
+mod clan_http;
 mod consumables;
 mod crafting;
+mod crew_http;
+mod daily;
 mod economy;
+mod events;
 mod exams;
+mod friends;
+mod hunting;
 mod inventory;
+mod mail;
+mod markets;
 mod missions;
+mod pet_actions;
 mod pets;
 mod recruits;
+mod rewards;
+mod seasonal;
 mod senjutsu;
+mod shadow_war;
 mod skillsets;
 mod talents;
 use persistence::MySqlPool;
 
+type SharedMap<K, V> = std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<K, V>>>;
+
 #[derive(Clone, Default)]
 pub struct GameState {
     pub database: Option<MySqlPool>,
-    battles: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<i64, missions::Battle>>>,
+    battles: SharedMap<i64, missions::Battle>,
+    hunting_battles: SharedMap<i64, hunting::HuntingBattle>,
+    eudemon_battles: SharedMap<i64, hunting::HuntingBattle>,
+    pet_boosts: SharedMap<i64, i64>,
+    shadow_war_battles: SharedMap<i64, shadow_war::ShadowWarBattle>,
+    shadow_war_presets: SharedMap<i64, (i64, Vec<serde_json::Value>)>,
+    shadow_war_enemies: SharedMap<i64, Vec<serde_json::Value>>,
+    event_battles: SharedMap<(i64, String), seasonal::EventBattle>,
+    gacha_histories: SharedMap<String, Vec<serde_json::Value>>,
 }
 impl GameState {
     pub fn with_database(database: Option<MySqlPool>) -> Self {
@@ -48,13 +72,24 @@ pub fn configured_router(state: GameState) -> Router {
         .route("/gateway.php", any(gateway))
         .route("/api/id-custom-color", axum::routing::get(|| async {axum::Json(serde_json::json!({"data":{}}))}))
         .route("/crossdomain.xml", axum::routing::get(|| async { ([(header::CONTENT_TYPE,"application/xml")],"<cross-domain-policy><allow-access-from domain=\"127.0.0.1\" secure=\"false\"/><allow-access-from domain=\"localhost\" secure=\"false\"/></cross-domain-policy>") }))
+        .route("/admin", axum::routing::get(|| async { axum::response::Redirect::temporary("/app/#admin") }))
+        .merge(admin::router())
+        .merge(clan_http::router())
+        .merge(crew_http::router())
         .layer(DefaultBodyLimit::max(Limits::default().max_bytes))
         .with_state(state);
     if let Ok(root) = std::env::var("GAME_DATA_ROOT") {
         router = router.nest_service("/game_data", tower_http::services::ServeDir::new(root));
     }
+    // Self-hosted web client (React + Ruffle WASM build). Served same-origin
+    // alongside the SWF gateway so the movie needs no CORS or spoofing.
+    if let Ok(root) = std::env::var("WEB_CLIENT_ROOT") {
+        router = router.nest_service("/app", tower_http::services::ServeDir::new(root));
+    }
     if let Ok(root) = std::env::var("CLIENT_ASSET_ROOT") {
-        router = router.fallback_service(tower_http::services::ServeDir::new(root));
+        router = router
+            .nest_service("/client", tower_http::services::ServeDir::new(&root))
+            .fallback_service(tower_http::services::ServeDir::new(root));
     }
     router
 }
@@ -153,6 +188,7 @@ fn dispatch(target: &str, amf3: bool) -> Value {
 #[cfg(test)]
 mod tests {
     mod extension;
+    mod player_actions;
     use super::*;
     use axum::{
         body::{Body as HttpBody, to_bytes},
@@ -190,15 +226,18 @@ mod tests {
         let pool = persistence::connect(&std::env::var("DATABASE_URL").unwrap())
             .await
             .unwrap();
+        let database: String = sqlx::query_scalar("SELECT DATABASE()")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                database.as_str(),
+                "ninja_ci_test" | "ninja_ci_reference_test"
+            ),
+            "Refusing gameplay regression outside isolated test schemas"
+        );
         if std::env::var("BOOTSTRAP_GAMEPLAY_TEST_DB").as_deref() == Ok("1") {
-            let database: String = sqlx::query_scalar("SELECT DATABASE()")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-            assert_eq!(
-                database, "ninja_ci_test",
-                "Refusing to bootstrap any other database"
-            );
             let mut connection = pool.acquire().await.unwrap();
             sqlx::query("SET FOREIGN_KEY_CHECKS=0")
                 .execute(&mut *connection)
@@ -208,6 +247,12 @@ mod tests {
                 .execute(&mut *connection)
                 .await
                 .unwrap();
+            sqlx::raw_sql(include_str!(
+                "../../../database/migrations/001_pet_skills.sql"
+            ))
+            .execute(&mut *connection)
+            .await
+            .unwrap();
             sqlx::query("SET FOREIGN_KEY_CHECKS=1")
                 .execute(&mut *connection)
                 .await

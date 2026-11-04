@@ -26,8 +26,33 @@ fn from_amf(value: &Value) -> Json {
         Value::String(v) => json!(v),
         Value::ByteArray(_) => Json::Null,
         Value::Array(v) => Json::Array(v.iter().map(from_amf).collect()),
-        Value::Object(v) | Value::MixedArray(v) => {
-            Json::Object(v.iter().map(|(k, v)| (k.clone(), from_amf(v))).collect())
+        Value::Object(v) => Json::Object(v.iter().map(|(k, v)| (k.clone(), from_amf(v))).collect()),
+        // ECMA arrays decode like PHP arrays: purely numeric keys become a
+        // list, mixed keys stay associative (AIR clients wrap arguments this
+        // way).
+        Value::MixedArray(v) => {
+            let mut numbers = Vec::with_capacity(v.len());
+            for (key, _) in v.iter() {
+                match key.parse::<usize>() {
+                    Ok(n) => numbers.push(n),
+                    Err(_) => {
+                        return Json::Object(
+                            v.iter().map(|(k, v)| (k.clone(), from_amf(v))).collect(),
+                        );
+                    }
+                }
+            }
+            let mut sorted = numbers.clone();
+            sorted.sort_unstable();
+            if sorted.as_slice() == (0..numbers.len()).collect::<Vec<_>>().as_slice() {
+                let mut dense = vec![Json::Null; numbers.len()];
+                for (key, value) in v.iter() {
+                    dense[key.parse::<usize>().unwrap()] = from_amf(value);
+                }
+                Json::Array(dense)
+            } else {
+                Json::Object(v.iter().map(|(k, v)| (k.clone(), from_amf(v))).collect())
+            }
         }
     }
 }
@@ -63,7 +88,12 @@ pub fn to_amf(value: &Json, amf3: bool) -> Value {
 pub fn string(args: &[Json], index: usize) -> String {
     match args.get(index) {
         Some(Json::String(v)) => v.clone(),
-        Some(Json::Number(v)) => v.to_string(),
+        // PHP prints whole floats without a decimal point; Ruffle sends some
+        // values as numbers that AIR sent as strings.
+        Some(Json::Number(v)) => match v.as_f64() {
+            Some(f) if f.is_finite() && f == f.trunc() => (f as i64).to_string(),
+            _ => v.to_string(),
+        },
         _ => String::new(),
     }
 }
@@ -114,6 +144,8 @@ pub async fn dispatch(state: &GameState, target: &str, args: &[Json]) -> Json {
         "Character.equipSkillSet" => characters::equip_skills(pool, args).await,
         "Character.setPoints" => characters::set_points(pool, args).await,
         "Character.buyItem" => crate::economy::buy_item(pool, args).await,
+        "Character.buyAnimation" => crate::animations::dispatch(pool, args, true).await,
+        "Character.useAnimation" => crate::animations::dispatch(pool, args, false).await,
         "Character.buyRenameBadge" => {
             crate::economy::buy_essential(pool, args, "essential_01", "essential").await
         }
@@ -151,11 +183,116 @@ pub async fn dispatch(state: &GameState, target: &str, args: &[Json]) -> Json {
         "Character.createSkillSet" => crate::skillsets::create(pool, args).await,
         "Character.saveSkillSet" => crate::skillsets::save(pool, args).await,
         "BattleSystem.startMission" => crate::missions::start(state, pool, args).await,
+        "BattleSystem.getMissionSData" => crate::missions::s_data(pool, args).await,
         "BattleSystem.finishMission" => crate::missions::finish(state, pool, args).await,
         "Character.getMissionRoomData" => crate::recruits::room(pool, args).await,
         "Character.recruitTeammate" => crate::recruits::recruit(pool, args).await,
         "Character.removeRecruitments" => crate::recruits::remove(pool, args).await,
+        "Events.get" => crate::events::get(pool, args).await,
+        "Events.executeService" => crate::events::execute_service(pool, args).await,
+        target if target.starts_with("PackageEvent.") => {
+            crate::events::dispatch_package_event(
+                pool,
+                target.strip_prefix("PackageEvent.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("Giveaway.") => {
+            crate::events::dispatch_giveaway(pool, target.strip_prefix("Giveaway.").unwrap(), args)
+                .await
+        }
+        "Leaderboard.getData" => crate::events::leaderboard_get_data(pool, args).await,
+        target if target.starts_with("PvP.") => {
+            crate::events::dispatch_pvp(pool, target.strip_prefix("PvP.").unwrap(), args).await
+        }
+        target if target.starts_with("MonsterHunterEvent2023.") => {
+            crate::seasonal::dispatch_monster_hunter(
+                state,
+                pool,
+                target.strip_prefix("MonsterHunterEvent2023.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("DragonHuntEvent.") => {
+            crate::seasonal::dispatch_dragon_hunt(
+                state,
+                pool,
+                target.strip_prefix("DragonHuntEvent.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("JusticeBadgeEvent2024.") => {
+            crate::seasonal::dispatch_justice_badge(
+                pool,
+                target.strip_prefix("JusticeBadgeEvent2024.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("HalloweenEvent2025.") => {
+            crate::seasonal::dispatch_halloween_2025(
+                state,
+                pool,
+                target.strip_prefix("HalloweenEvent2025.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("ConfrontingDeathEvent2025.") => {
+            crate::seasonal::dispatch_confronting_death_2025(
+                state,
+                pool,
+                target.strip_prefix("ConfrontingDeathEvent2025.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("ThanksGivingEvent2025.") => {
+            crate::seasonal::dispatch_thanksgiving_2025(
+                state,
+                pool,
+                target.strip_prefix("ThanksGivingEvent2025.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("ChristmasEvent2021.") => {
+            crate::seasonal::dispatch_christmas_2021(
+                state,
+                pool,
+                target.strip_prefix("ChristmasEvent2021.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("ChristmasEvent2025.") => {
+            crate::seasonal::dispatch_christmas_2025(
+                state,
+                pool,
+                target.strip_prefix("ChristmasEvent2025.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("NewYear2026.") => {
+            crate::seasonal::dispatch_new_year_2026(
+                pool,
+                target.strip_prefix("NewYear2026.").unwrap(),
+                args,
+            )
+            .await
+        }
         "Character.getInfo" => characters::info(pool, args).await,
+        "Character.deleteCharacter" => characters::delete_character(pool, args).await,
+        "Character.convertTokensToGold" => characters::convert_tokens_to_gold(pool, args).await,
+        "Character.renameCharacter" => characters::rename_character(pool, args).await,
+        "Character.addItems" => characters::dev_add_items(pool, args).await,
+        "Character.setCharInfo" => characters::dev_set_char_info(pool, args).await,
+        "Character.toggleEmblem" => characters::dev_toggle_emblem(pool, args).await,
+        "Character.learnSkill" => characters::dev_learn_skill(pool, args).await,
         "Pet.executeService" => {
             let method = string(args, 0);
             if let Some(params) = args.get(1).and_then(Json::as_array) {
@@ -167,6 +304,47 @@ pub async fn dispatch(state: &GameState, target: &str, args: &[Json]) -> Json {
         target if target.starts_with("Pet.") => {
             crate::pets::dispatch(pool, target.strip_prefix("Pet.").unwrap(), args).await
         }
+        target if target.starts_with("PetCombination.") => {
+            crate::pets::dispatch_combination(
+                state,
+                pool,
+                target.strip_prefix("PetCombination.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("DailyReward.") => {
+            crate::daily::dispatch_daily_reward(
+                pool,
+                target.strip_prefix("DailyReward.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("DailyRoulette.") => {
+            crate::daily::dispatch_daily_roulette(
+                pool,
+                target.strip_prefix("DailyRoulette.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("DailyScratch.") => {
+            crate::daily::dispatch_daily_scratch(
+                pool,
+                target.strip_prefix("DailyScratch.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("WelcomeLogin.") => {
+            crate::daily::dispatch_welcome_login(
+                pool,
+                target.strip_prefix("WelcomeLogin.").unwrap(),
+                args,
+            )
+            .await
+        }
         target
             if target.starts_with("ChuninExam.")
                 || target.starts_with("JouninExam.")
@@ -175,6 +353,103 @@ pub async fn dispatch(state: &GameState, target: &str, args: &[Json]) -> Json {
         {
             let (service, method) = target.split_once('.').unwrap();
             crate::exams::dispatch(pool, service, method, args).await
+        }
+        target if target.starts_with("HuntingHouse.") => {
+            crate::hunting::dispatch_hunting_house(
+                state,
+                pool,
+                target.strip_prefix("HuntingHouse.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("EudemonGarden.") => {
+            crate::hunting::dispatch_eudemon_garden(
+                state,
+                pool,
+                target.strip_prefix("EudemonGarden.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("MaterialMarket.") => {
+            crate::markets::dispatch_material_market(
+                pool,
+                target.strip_prefix("MaterialMarket.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("MysteriousMarket.") => {
+            crate::markets::dispatch_mysterious_market(
+                pool,
+                target.strip_prefix("MysteriousMarket.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("SpecialDeals.") => {
+            crate::markets::dispatch_special_deals(
+                pool,
+                target.strip_prefix("SpecialDeals.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("ExoticPackage.") => {
+            crate::markets::dispatch_exotic_package(
+                pool,
+                target.strip_prefix("ExoticPackage.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("Friend.") => {
+            crate::friends::dispatch(pool, target.strip_prefix("Friend.").unwrap(), args).await
+        }
+        "Mail.executeService" => {
+            let method = string(args, 0);
+            if let Some(params) = args.get(1).and_then(Json::as_array) {
+                crate::mail::dispatch(pool, &method, params).await
+            } else {
+                Ok(session_error("Invalid mail parameters"))
+            }
+        }
+        target if target.starts_with("Mail.") => {
+            crate::mail::dispatch(pool, target.strip_prefix("Mail.").unwrap(), args).await
+        }
+        "ShadowWar.executeService" => {
+            let method = string(args, 0);
+            if let Some(params) = args.get(1).and_then(Json::as_array) {
+                crate::shadow_war::dispatch(state, pool, &method, params).await
+            } else {
+                Ok(session_error("Invalid shadow war parameters"))
+            }
+        }
+        target if target.starts_with("ShadowWar.") => {
+            crate::shadow_war::dispatch(
+                state,
+                pool,
+                target.strip_prefix("ShadowWar.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("Clan.") => {
+            crate::shadow_war::dispatch_clan_or_crew(
+                pool,
+                target.strip_prefix("Clan.").unwrap(),
+                args,
+            )
+            .await
+        }
+        target if target.starts_with("Crew.") => {
+            crate::shadow_war::dispatch_clan_or_crew(
+                pool,
+                target.strip_prefix("Crew.").unwrap(),
+                args,
+            )
+            .await
         }
         _ => {
             tracing::warn!(method = target, "AMF method not implemented");

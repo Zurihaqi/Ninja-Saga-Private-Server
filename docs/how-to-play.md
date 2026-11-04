@@ -2,6 +2,8 @@
 
 This Rust version is a local PvE preview. Complete [runtime setup](runtime-setup.md) first. A clone does not include the AIR runtime, SWF assets, local credentials or catalog export.
 
+The browser game is `/app/`; the dashboard is `/admin` → `/app/#admin`. Build the web client and set `WEB_CLIENT_ROOT`. Admin login requires an admin account (`account_type=99`) or an explicitly configured secret. On the configured development workstation, the local helper stores its unique secret in ignored `.tools/admin-secret.txt`.
+
 ## First session
 
 1. Start the provisioned MySQL database and Rust backend. If already running, use that instance; check `/health/live` for liveness.
@@ -35,7 +37,7 @@ Complete unlocked stages in sequence, then claim promotion from the panel. Rank 
 - Discover Sage Mode at level 80 for 2,000,000 gold, then spend SS on upgrades and equip Sage skills.
 - Upgrade advanced academy skills through configured prerequisite chains. Changing an existing Special Jounin class spends tokens.
 
-Natural TP/SS/material farming, secondary modes, social systems, production PvP/chat, events, pet training/combining and administration are unfinished. A complete progression economy is not yet available. See [progress](progress.md).
+Daily rewards, hunting/markets, Shadow War, friends/mail, pet training/combining, food/skill learning, animations, events, administrative APIs and realtime polling now have implementation. Complete progression earning, clan/crew integration, staged S missions and actual-client multiplayer remain acceptance work. See [progress](progress.md).
 
 ## Troubleshooting
 

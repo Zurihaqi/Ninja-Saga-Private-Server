@@ -12,12 +12,20 @@ This is a review/staging procedure. Container execution, backups/restore, deploy
 ## Build and provision
 
 ```powershell
-cargo build --release --package game-server --bins --locked
+cargo build --release --workspace --locked
 $env:DATABASE_URL = 'mysql://USER:PASSWORD@127.0.0.1:3307/DEDICATED_DATABASE'
 cargo run --release --package game-server --bin import-reference --locked -- 'PATH/TO/reference-catalogs.json'
 ```
 
 Replace placeholders and keep credentials outside Git and shell transcripts. The database must already exist and the importer needs schema/catalog write permissions. It creates missing tables and upserts catalog rows. Do not point it at an existing deployment as a migration shortcut; back up a database before changing its catalogs. The server does not import or seed on startup.
+
+For an already provisioned database, explicitly apply additive migrations before starting this version:
+
+```powershell
+cargo run --release --package game-server --bin migrate --locked
+```
+
+Migration `001_pet_skills` creates paid pet-learning state without changing existing player rows. The original schema remains the baseline. No migration runs automatically on server startup.
 
 ## Configure and start
 
@@ -26,6 +34,10 @@ Replace placeholders and keep credentials outside Git and shell transcripts. The
 | `DATABASE_URL` | SQLx MySQL URL. Without it, gameplay methods return a configuration error. |
 | `GAME_DATA_ROOT` | Original game-data directory including `mission.json`, `library.json` and `senjutsu.json`. Served at `/game_data`. |
 | `CLIENT_ASSET_ROOT` | Original client asset directory; used for static fallback delivery. |
+| `WEB_CLIENT_ROOT` | Absolute path to the built `apps/web-client/dist`; served at `/app/`. |
+| `ADMIN_SECRET` | Optional explicit admin secret; without it, use a bcrypt-backed account with `account_type=99`. No default secret exists. |
+| `CHAT_ADMIN_SECRET` | Explicit secret for chat announcements; unset disables that administrative endpoint. |
+| `CHAT_SOCKET_URL` / `PVP_SOCKET_URL` | Endpoints reachable by the player, defaulting to local ports 3002 and 3000 (`/pvp`). Set them for remote clients. |
 | `APP_URL` | HTTP origin reachable by the client; supplies its CDN base URL. |
 | `BIND_ADDR` | Listener address; defaults to `127.0.0.1:8080`. |
 | `RUST_LOG` | Log filter, normally `info`. |
@@ -39,6 +51,20 @@ cargo run --release --package game-server --bin game-server --locked
 ```
 
 Check `/health/live` for liveness. `/amf` and `/gateway.php` accept AMF; empty requests return `AMF Gateway Ready`. `/health/ready` intentionally returns 503 in this preview and is not a deployment signal yet.
+
+## Browser game and admin
+
+```powershell
+npm ci --prefix apps/web-client --ignore-scripts --no-audit --no-fund
+npm run build --prefix apps/web-client
+$env:WEB_CLIENT_ROOT = Join-Path $PWD 'apps/web-client/dist'
+```
+
+The prebuild step generates Ruffle assets and licenses from the locked dependency; generated files stay out of Git. Visit `/app/` for the game and `/admin` for the dashboard (`/app/#admin`). The original prepared client assets are still required at `CLIENT_ASSET_ROOT`.
+
+Log in to admin using an admin account or an explicitly configured `ADMIN_SECRET`. The development branch's local helper creates ignored `.tools/admin-secret.txt`; no workstation helper or private secret is shipped here.
+
+For realtime, start the separate `chat-server` and `pvp-server` binaries with the same database and appropriate listener/secret/catalog environment. Their defaults are ports 3002/3000; set `BIND_ADDR` per process. Realtime currently supports polling. Actual-client multiplayer acceptance remains pending.
 
 ## AIR client
 
@@ -54,7 +80,7 @@ Configure `DATABASE_URL`, `APP_URL`, `GAME_DATA_PATH` and `CLIENT_ASSET_PATH`, t
 docker compose -f infra/compose.yaml up --build
 ```
 
-The database URL must work from inside the container; `127.0.0.1` there refers to the container itself. Database provisioning is separate. Assets are read-only mounts; host port 8080 binds to loopback. The final image contains `game-server` and explicitly invoked `import-reference`, without PHP/Node or experimental services. Docker has not been run on the development workstation.
+The database URL must work from inside the container; `127.0.0.1` there refers to the container itself. Provisioning and additive migrations are separate. Assets are read-only mounts and host listeners default to loopback. The image includes game/chat/PvP binaries, explicit import/migration utilities and built web assets, without PHP/Node services or the protocol experiment. Node is only a frontend build dependency. Docker has not been run on the development workstation.
 
 ## Restarts and diagnosis
 

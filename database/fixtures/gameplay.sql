@@ -10,5 +10,13 @@ INSERT IGNORE INTO game_configs (`key`,value) VALUES
 ('talent_shop','{"extreme":[{"id":"de"}],"secret":[]}'),
 ('talent_info','{"de":{"is_emblem":false,"price_gold":500000,"price_token":0}}'),
 ('talent_description','{"talent_de_skill_1":{"talent_skill_id":"skill_1006"}}'),
-('academy_chains','{"fire":{"rage":["skill_152","skill_232"]}}');
+('academy_chains','{"fire":{"rage":["skill_152","skill_232"]}}'),
+('eudemon','{"default_tries":3,"bosses":[{"id":"ene_01","lvl":1,"xp":50,"gold":100,"rewards":["material_509",{"id":"material_01","rate":100,"min":2,"max":2,"unique":false,"owned_rate":0}]}]}'),
+('special_deals','[{"id":1,"name":"Starter Pack","end":"Limited Time","price":50,"items":["wpn_81","material_509:5"]}]'),
+('exotic_packages','[{"key":"spiritoforient","name":"Spirit of Orient Set","price":200,"items":["wpn_82","material_509:3"]}]'),
+('daily_rewards','{"token_amount":25,"double_xp_chance":20,"xp_min_multiplier":50,"xp_max_multiplier":100}'),
+('attendance_rewards','[{"id":1,"price":1,"item":"gold_1000"},{"id":2,"price":5,"item":"tokens_50"}]'),
+('roulette_rewards','{"1":"gold_1000","2":"tokens_10","3":"xp_500"}'),
+('scratch','{"rewards":["gold_1000","tokens_10","material_509:1"],"grand_prize":["tokens_100"]}'),
+('welcome_login_rewards','["gold_250000","item_45:5","essential_01:1","essential_05:5","essential_12:1","tokens_500","skill_2158"]');
 INSERT IGNORE INTO skills (skill_id,name,level,element,price_gold,price_tokens,premium) VALUES ('skill_152','Regression base skill',40,2,10,0,0),('skill_232','Regression upgraded skill',40,2,25,0,0);

@@ -3,6 +3,15 @@ on: [push, pull_request]
 permissions:
   contents: read
 jobs:
+  web-client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --prefix apps/web-client --ignore-scripts --no-audit --no-fund
+      - run: npm run build --prefix apps/web-client
   rust:
     runs-on: ubuntu-latest
     services:
@@ -29,4 +38,4 @@ jobs:
           DATABASE_URL: mysql://root:ci-only-password@127.0.0.1:3306/ninja_ci_test
           BOOTSTRAP_GAMEPLAY_TEST_DB: '1'
           GAME_DATA_ROOT: ${{ github.workspace }}/tests/compatibility/gameplay
-      - run: cargo build --release --package game-server --bins --locked
+      - run: cargo build --release --workspace --locked

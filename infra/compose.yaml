@@ -10,6 +10,9 @@ services:
       APP_URL: ${APP_URL:?Set the HTTP origin reachable by the AIR client}
       GAME_DATA_ROOT: /srv/game-data
       CLIENT_ASSET_ROOT: /srv/client
+      ADMIN_SECRET: ${ADMIN_SECRET:-}
+      CHAT_SOCKET_URL: ${CHAT_SOCKET_URL:-http://127.0.0.1:3002}
+      PVP_SOCKET_URL: ${PVP_SOCKET_URL:-http://127.0.0.1:3000/pvp}
       RUST_LOG: info
     ports: ["127.0.0.1:8080:8080"]
     volumes:
@@ -20,4 +23,32 @@ services:
       - type: bind
         source: ${CLIENT_ASSET_PATH:?Set the host directory containing the original client assets}
         target: /srv/client
+        read_only: true
+  chat-server:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile
+    entrypoint: ["/usr/local/bin/chat-server"]
+    environment:
+      BIND_ADDR: 0.0.0.0:3002
+      POLICY_BIND_ADDR: 0.0.0.0:843
+      DATABASE_URL: ${DATABASE_URL:?Set a MySQL URL reachable from inside the container}
+      CHAT_ADMIN_SECRET: ${CHAT_ADMIN_SECRET:-}
+      RUST_LOG: info
+    ports: ["127.0.0.1:3002:3002", "127.0.0.1:843:843"]
+  pvp-server:
+    build:
+      context: ..
+      dockerfile: infra/docker/Dockerfile
+    entrypoint: ["/usr/local/bin/pvp-server"]
+    environment:
+      BIND_ADDR: 0.0.0.0:3000
+      DATABASE_URL: ${DATABASE_URL:?Set a MySQL URL reachable from inside the container}
+      GAME_DATA_ROOT: /srv/game-data
+      RUST_LOG: info
+    ports: ["127.0.0.1:3000:3000"]
+    volumes:
+      - type: bind
+        source: ${GAME_DATA_PATH:?Set the host directory containing game-data JSON and binaries}
+        target: /srv/game-data
         read_only: true
