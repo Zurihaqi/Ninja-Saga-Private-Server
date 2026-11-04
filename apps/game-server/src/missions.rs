@@ -17,6 +17,21 @@ fn error(message: &str) -> Json {
     json!({"status":0,"error":message})
 }
 
+pub async fn s_data(pool: &MySqlPool, args: &[Json]) -> Result {
+    let id = integer(args, 0);
+    if let Some(e) = guard(pool, id, &string(args, 1), true).await? {
+        return Ok(e);
+    }
+    let mut materials = json!({"material_899":0,"material_900":0});
+    let rows=sqlx::query("SELECT item_id,CAST(SUM(quantity) AS SIGNED) AS quantity FROM character_items WHERE character_id=? AND item_id IN ('material_899','material_900') GROUP BY item_id").bind(id).fetch_all(pool).await?;
+    for row in rows {
+        materials[row.try_get::<String, _>("item_id")?] = json!(row.try_get::<i64, _>("quantity")?);
+    }
+    // The reference exposes the initial S-mission state; its start/finish path
+    // never changes these cache values. Keep that contract until staged S battles exist.
+    Ok(json!({"status":1,"error":0,"stage":1,"energy":25,"max_energy":25,"materials":materials}))
+}
+
 pub async fn start(state: &GameState, pool: &MySqlPool, args: &[Json]) -> Result {
     let id = integer(args, 0);
     let requested = string(args, 1);
@@ -151,7 +166,28 @@ pub async fn finish(state: &GameState, pool: &MySqlPool, args: &[Json]) -> Resul
         return Ok(error("Invalid battle data"));
     }
     let mut tx = pool.begin().await?;
-    let row=sqlx::query("SELECT gold,xp,level,`rank`,user_id,equipment_pet,IF(double_xp_expire_at>NOW(),xp_bonus_rate,0) AS bonus FROM characters WHERE id=? FOR UPDATE").bind(id).fetch_one(&mut *tx).await?;
+    let (xp_reward, level, xp, level_up, tokens) =
+        award_battle_progress(&mut tx, id, battle.xp, battle.gold).await?;
+    sqlx::query("DELETE FROM character_recruits WHERE character_id=?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    let result = json!({"status":1,"error":0,"result":[xp_reward,battle.gold,[]],"level":level,"xp":xp,"level_up":level_up,"account_tokens":tokens});
+    tx.commit().await?;
+    battles.remove(&id);
+    Ok(result)
+}
+
+pub(crate) async fn award_battle_progress(
+    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    id: i64,
+    base_xp: i64,
+    gold_reward: i64,
+) -> std::result::Result<(i64, i32, i64, bool, i32), sqlx::Error> {
+    let row = sqlx::query("SELECT gold,xp,level,`rank`,user_id,equipment_pet,IF(double_xp_expire_at>NOW(),xp_bonus_rate,0) AS bonus FROM characters WHERE id=? FOR UPDATE")
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await?;
     let old_level: i32 = row.try_get("level")?;
     let rank: i32 = row.try_get("rank")?;
     let mut level = old_level;
@@ -164,23 +200,23 @@ pub async fn finish(state: &GameState, pool: &MySqlPool, args: &[Json]) -> Resul
     };
     let bonus: i32 = row.try_get("bonus")?;
     let xp_reward = if bonus > 0 {
-        battle.xp * (100 + i64::from(bonus)) / 100
+        base_xp * (100 + i64::from(bonus)) / 100
     } else {
-        battle.xp
+        base_xp
     };
     let mut xp = row
         .try_get::<i64, _>("xp")?
         .checked_add(xp_reward)
         .ok_or_else(|| sqlx::Error::Protocol("XP overflow".into()))?;
     let gold = i64::from(row.try_get::<i32, _>("gold")?)
-        .checked_add(battle.gold)
+        .checked_add(gold_reward)
         .filter(|v| *v <= i64::from(i32::MAX))
         .ok_or_else(|| sqlx::Error::Protocol("Gold overflow".into()))?;
     while level < cap {
         let required: Option<i64> =
             sqlx::query_scalar("SELECT character_xp FROM x_p_s WHERE level=?")
                 .bind(level)
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut **tx)
                 .await?;
         if xp >= required.filter(|v| *v > 0).unwrap_or(999999999) {
             level += 1;
@@ -192,7 +228,7 @@ pub async fn finish(state: &GameState, pool: &MySqlPool, args: &[Json]) -> Resul
         && let Some(required) =
             sqlx::query_scalar::<_, i64>("SELECT character_xp FROM x_p_s WHERE level=?")
                 .bind(level)
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut **tx)
                 .await?
         && required > 0
     {
@@ -203,19 +239,12 @@ pub async fn finish(state: &GameState, pool: &MySqlPool, args: &[Json]) -> Resul
         .bind(xp)
         .bind(level)
         .bind(id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
-    crate::pets::award_xp(&mut tx, id, xp_reward).await?;
-    sqlx::query("DELETE FROM character_recruits WHERE character_id=?")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+    crate::pets::award_xp(tx, id, xp_reward).await?;
     let tokens: i32 = sqlx::query_scalar("SELECT tokens FROM users WHERE id=?")
         .bind(row.try_get::<u64, _>("user_id")?)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
-    let result = json!({"status":1,"error":0,"result":[xp_reward,battle.gold,[]],"level":level,"xp":xp,"level_up":level>old_level,"account_tokens":tokens});
-    tx.commit().await?;
-    battles.remove(&id);
-    Ok(result)
+    Ok((xp_reward, level, xp, level > old_level, tokens))
 }

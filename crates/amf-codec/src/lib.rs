@@ -296,6 +296,10 @@ impl Reader<'_> {
                 let n = self.u32()? as usize;
                 Value::String(self.string(n)?)
             }
+            // Flash Player serialises ActionScript values that have no AMF0
+            // representation (e.g. Dictionary) with the 0x0D Unsupported
+            // marker; the AIR client sends it and SabreAMF tolerated it.
+            13 => Value::Null,
             17 => {
                 self.strings.clear();
                 self.objects3.clear();

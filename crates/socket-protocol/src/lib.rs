@@ -203,6 +203,87 @@ pub fn encode_payload(packets: &[EnginePacket], limits: Limits) -> Result<String
     Ok(output)
 }
 
+/// Decode Engine.IO v4 text polling frames separated by ASCII 0x1E (record separator).
+pub fn decode_payload_v4(text: &str, limits: Limits) -> Result<Vec<EnginePacket>, Error> {
+    if text.len() > limits.max_payload_bytes {
+        return Err(Error::PayloadTooLarge);
+    }
+    if text.is_empty() {
+        return Err(Error::InvalidLength);
+    }
+    let mut packets = Vec::new();
+    for part in text.split('\x1e') {
+        if packets.len() >= limits.max_packets {
+            return Err(Error::TooManyPackets);
+        }
+        packets.push(decode_packet(part, limits)?);
+    }
+    Ok(packets)
+}
+
+/// Encode Engine.IO v4 text polling frames separated by ASCII 0x1E (record separator).
+pub fn encode_payload_v4(packets: &[EnginePacket], limits: Limits) -> Result<String, Error> {
+    if packets.len() > limits.max_packets {
+        return Err(Error::TooManyPackets);
+    }
+    if packets.is_empty() {
+        return encode_packet(
+            &EnginePacket {
+                kind: EngineKind::Noop,
+                data: String::new(),
+            },
+            limits,
+        );
+    }
+    let mut output = String::new();
+    for (idx, packet) in packets.iter().enumerate() {
+        let encoded = encode_packet(packet, limits)?;
+        let sep = usize::from(idx > 0);
+        let size = output
+            .len()
+            .checked_add(sep)
+            .and_then(|n| n.checked_add(encoded.len()))
+            .ok_or(Error::PayloadTooLarge)?;
+        if size > limits.max_payload_bytes {
+            return Err(Error::PayloadTooLarge);
+        }
+        if idx > 0 {
+            output.push('\x1e');
+        }
+        output.push_str(&encoded);
+    }
+    Ok(output)
+}
+
+/// Decode a Socket.IO packet allowing optional JSON auth/session payloads on CONNECT.
+pub fn decode_socket_lenient(text: &str, limits: Limits) -> Result<SocketPacket, Error> {
+    check_packet_size(text.len(), limits)?;
+    if let Some(rest) = text.strip_prefix('0') {
+        let (namespace, payload) = if rest.starts_with('/') {
+            let end = rest.find(',').unwrap_or(rest.len());
+            let ns = &rest[..end];
+            validate_namespace(ns)?;
+            let tail = if end == rest.len() {
+                ""
+            } else {
+                &rest[end + 1..]
+            };
+            (ns.to_owned(), tail)
+        } else {
+            ("/".to_owned(), rest)
+        };
+        if !payload.is_empty() {
+            let value: serde_json::Value =
+                serde_json::from_str(payload).map_err(|_| Error::InvalidSocketPacket)?;
+            if !value.is_object() {
+                return Err(Error::InvalidSocketPacket);
+            }
+        }
+        return Ok(SocketPacket::Connect { namespace });
+    }
+    decode_socket(text, limits)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum SocketPacket {
     Connect {

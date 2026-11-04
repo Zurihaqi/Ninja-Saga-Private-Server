@@ -1,55 +1,43 @@
-# Migration progress — 2026-11-03
+# Migration progress — 2026-11-04
 
-Plan status: **core playability in progress** on the existing `sprint/1-protocol-compatibility` branch. The first local PvE slice works in the actual AIR client; the user confirmed battling and completing the first mission. This is an early playable slice, not full game parity. No new branch is created per sprint.
+Status: **broad gameplay implementation, integration and acceptance in progress**. Work continues on `sprint/1-protocol-compatibility`; [draft PR #1](https://github.com/Zurihaqi/Ninja-Saga-Private-Server/pull/1) reviews the runtime candidate. `main` remains the production destination. Original PHP/Node source and assets are preserved on `legacy/php-node` at `ecf9012d885d1c89fd5f42791eed4f37f90f2edd`.
 
-Runtime checkpoint: `bd31536a` implements persistent PvE progression and protocol compatibility. Release preparation separates runtime review from ongoing development: original `main` is preserved as `legacy/php-node`, and `release/rust-runtime` excludes workstation tools and protocol experiments. The replacement PR remains draft; `main` has not been cut over. See [branch policy](../branch-policy.md) and [how to play](../how-to-play.md).
+The first mission is verified in AIR and confirmed by the user. The [Ruffle desktop spike](../research/ruffle-client-spike.md) records the same slice running in Ruffle. A React/Ruffle browser host and admin dashboard now build successfully; broader actual-client acceptance is still open. Headless AMF/MySQL testing remains the default, with no game-window recording or automation.
 
-Review: [draft PR #1](https://github.com/Zurihaqi/Ninja-Saga-Private-Server/pull/1). Runtime checkpoint `05045df4` passes 20 unit/fixture tests, isolated MySQL integration, formatting, strict Clippy and an optimized release build. Development documentation and tooling remain on this branch; the runtime PR retains tests/CI and operating docs. Hosted CI, staging/container operation and production acceptance remain open.
+## Implemented and checked headlessly
 
-## Current priority: complete gameplay loops
-
-User direction: prioritize a fully playable game before polishing lower-priority edge cases and visual details. Use headless AMF/MySQL regression tests by default; actual-client checks are occasional acceptance checks. Authentication, transactional purchases and duplicate-reward protection remain part of normal implementation.
-
-| Gameplay loop | Status |
+| Area | Implementation and evidence |
 |---|---|
-| Register/login, create/select character, village | Verified in AIR client and automated MySQL flow |
-| First mission, battle and XP/gold reward | Verified in AIR client and confirmed by user; headless persistence/replay checks pass |
-| Attribute allocation/reallocation | Implemented after user-reported missing method; headless save/reload and level-up-budget tests pass |
-| Normal shop: buy, equip and sell | Implemented; headless transaction and persistence flow passes |
-| Academy: learn/equip skills and element acquisition | Implemented; headless flow passes |
-| Skill presets | Get/create/save implemented with source premium/cost rules; headless flow passes |
-| Rank exams through Ninja Tutor | Four exams implemented; headless stage unlock, level/rank gates, promotion and concurrent claim checks pass |
-| Pets and NPC recruits | Buy/equip/rename/release pets, mission XP, paid NPC squads and mission consumption implemented; headless persistence checks pass |
-| Blacksmith and consumables | 65 pinned recipes, gold/material and token forging, battle items, TP consumables and reward packs implemented; headless rollback/consumption checks pass |
-| Advanced academy and Special Jounin classes | Skill-chain upgrades, equipped skill/preset replacement and class changes implemented; headless flow passes |
-| Talents and Sage Mode | Discovery, upgrades, talent resets/TP packages and Sage skill equipment implemented; headless flow passes |
-| Friends/mail/clans/crews | Pending |
-| PvP/chat production integration | Pending; text-polling experiment only |
-| Events, secondary modes and full admin | Pending |
+| Accounts and progression | Login/creation/loading, equipment, points, missions, reward replay protection, four exams through Ninja Tutor, normal/advanced academy, presets, talents and Sage Mode |
+| Shops and inventory | Buy/sell/equip, element learning, animation buying/use, 65 blacksmith recipes, consumables, Material/Mysterious markets, Special Deals and Exotic Packages |
+| Pets | Buying, equipment, rename/release, mission XP, Villa training/slots, combining, food MP and explicit paid skill learning with saved unlocks |
+| PvE and daily modes | Hunting House, Eudemon Garden, daily reward/roulette/scratch, welcome login and Shadow War; S-rank mission data endpoint is implemented, but staged S-mission progression remains open |
+| Social | Friends, friend recruitment and mail; clan/crew HTTP services exist and have API checks; AMF clan/crew operations still include reference-style placeholder responses |
+| Realtime | Chat/global and clan channels, announcements, PvP matchmaking/rooms/combat/spectators have implementation and router tests; polling transport only, with mocked characters in realtime lifecycle tests |
+| Events | Event catalog, packages, giveaways, leaderboard/PvP APIs and nine seasonal event handlers; representative database checks, not exhaustive acceptance of every event |
+| Administration | REST resources, commands/configuration/seasons/chat and React dashboard at `/admin` → `/app/#admin`; bcrypt admin login and explicitly configured secret login |
+| Client/build | React/Ruffle host at `/app/`; locked Ruffle assets generated at build time, excluded from Git; Docker image definitions include built web assets and runtime executables |
 
-The normal progression API flow now covers gear, skills, points, missions, all four rank gates, pets, NPC recruits, crafting, talents and Sage Mode with saved progress. Actual AIR acceptance beyond the first mission remains open. Next core work: training/secondary battle modes that supply TP/SS/materials, friend recruitment and social systems, then production PvP/chat and event loops. Pet villa/combining and secondary inventory/account features also remain. No percentage is reported because method counts do not measure gameplay completeness.
+The pet level-setting action is restricted to administrators because its unbound client developer function has no retail cost contract. New purchased pets learn skills explicitly; existing pets retain previous level-based unlock behavior. Additive migration `database/migrations/001_pet_skills.sql` stores paid learning without changing existing player rows. Run `cargo run -p game-server --bin migrate --locked` with the target `DATABASE_URL` before starting this version on an existing database.
 
-## Foundation inventory (historical Sprint 0/1 scope)
+## Authorization and test isolation
 
-| Task | Current evidence | Remaining |
-|---|---|---|
-| NSR-001 baseline | Pinned source, original locked PHP dependencies, MySQL 8.4.7 migrated/seeded; actual client runs against Rust | Full original-server gameplay comparison |
-| NSR-002 AMF inventory | 276 gateway-resolvable public declarations, 168 helper declarations; dispatch documented | Captured client calls and full behavioral contracts |
-| NSR-003 realtime audit | Event inventory, Socket.IO/Engine.IO lock versions, auth/policy differences | Live Flash handshakes |
-| NSR-004 database inventory | 34 migrations executed with documented event-insert workaround; schema exported; 8,602 catalog rows imported | Wider integrity and rollback verification |
-| NSR-005 admin/routes/jobs | 16 resource classes, 20 pages, HTTP and scheduler inventories | Runtime permission checks |
-| NSR-006 AMF spike | Bounded codec, acyclic references, ByteArray and actual AIR account/mission calls | Additional types and full method coverage |
-| NSR-007 Socket.IO spike | EIO3 text framing and isolated polling `/compat` namespace; Socket.IO 2.5.0 client checks pass | Flash networking, WebSocket upgrades, production auth/events |
-| NSR-008 foundation | Binaries, SQLx pool, logs/config/shutdown/liveness; lockfile, CI and Compose | Docker execution and deployment hardening |
-| NSR-009 fixtures | PHP serializer/deserializer fixtures and legacy JS parser fixture; 28 regular Rust tests plus explicit MySQL integration | Captured login/gameplay, DB differential harness |
-| NSR-010 review | Initial module contracts documented | Protocol gates prevent full acceptance |
+Clan/crew token issuance now always validates the session and saves both tokens atomically. Missing/wrong sessions cannot rotate credentials. Admin and chat have no built-in secret; admin passwords require bcrypt verification, and failed token creation cannot fall back to a predictable value.
 
-The current chat/PvP binaries remain health-only process shells; the polling experiment is separate. Full protocol acceptance, particularly Flash realtime transport, remains open while core AMF/PvE playability advances under the user's revised priority.
+The local launcher generates an ignored `.tools/admin-secret.txt` when `ADMIN_SECRET` is unset. It can start chat/PvP with `-IncludeRealtime`. See [local setup](../local-development.md), [how to play](../how-to-play.md) and [web client instructions](../../apps/web-client/README.md).
 
-Intentional differences: bounded strict AMF decoding; explicit ownership checks rather than the upstream gateway's session-string heuristic; point budgets enforced using the actual profile's level-based rule; purchases and mission rewards are transactional. Unsupported methods return explicit errors. Readiness still reports 503 pending broader acceptance. The diagnostic response retains the original `Laravel Ninja Saga Revived` string for byte compatibility.
+The expanded regression changes global event/configuration fixtures. Both local test modes therefore use isolated schemas: `ninja_ci_test` for minimal fixtures and `ninja_ci_reference_test` for original catalogs. The playable `ninja_rust_test` database is not the regression target. CI uses only its disposable `ninja_ci_test` service database.
 
-Validation: `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked`. Docker/CI definitions are supplied but have not run in their hosted environments.
+## Validation of this integration
 
-Live smoke validation: `python scripts/smoke_servers.py` passed for all three binaries over loopback, including both gateway aliases and PHP fixture equality. The sandbox blocked loopback connections; rerunning the same checks outside the sandbox succeeded. Smoke processes were stopped after testing.
+The development workspace passes 32 regular Rust tests, strict Clippy, formatting, minimal-fixture and original-catalog MySQL regressions, and the React/Ruffle build. Live startup checks verify the game/browser host, authenticated admin overview and chat/PvP liveness. Realtime router tests now compose shared health routes exactly as process startup does, catching duplicate-route panics. Generated Ruffle assets and local secrets are excluded from Git. Hosted checks for the refreshed PR and Docker execution are separate acceptance steps.
 
-Current validation includes 28 regular Rust tests and one explicitly invoked AMF/MySQL gameplay integration test covering the loops above. Both the populated development database (including original JSON catalogs) and minimal CI fixture database pass. Formatting and strict Clippy pass. The Socket.IO 2.5.0 harness supplies polling evidence; actual Flash realtime networking is still pending. CI definitions include MySQL-backed gameplay checks; hosted execution is pending.
+## Still required for a fully playable release
+
+1. Verify complete player progression and natural TP/SS/material earning through real client flows; finish staged S missions and any remaining client-called actions found by that audit.
+2. Verify clan/crew panels against the implemented HTTP services and finish the required AMF bridge behavior.
+3. Exercise chat and full PvP battles with two actual clients, including disconnect/reconnect, rewards and spectators. Confirm polling covers the client or implement required WebSocket transport.
+4. Accept later exams, pets, events and administration in AIR/Ruffle/browser; unit tests and a successful frontend build do not prove all panels work.
+5. Validate target-platform containers, migrations, asset delivery, backup/restore and rollback. Readiness still returns 503; mission/battle sessions are in memory and expire or clear on restart.
+
+No percentage or full feature parity is claimed. The [source inventories](../inventory/) and [migration plan](plan.md) remain references; this document supersedes their historical sprint status. Complete gameplay loops take priority over lower-priority polish.

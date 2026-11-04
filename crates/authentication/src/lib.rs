@@ -71,7 +71,11 @@ pub fn matches_session(owner: u64, stored: &str, supplied: &str) -> bool {
 }
 
 pub fn registration_hash(raw: &str) -> String {
-    format!("{:x}", Sha256::digest(raw.as_bytes()))
+    sha256_hex(raw)
+}
+
+pub fn sha256_hex(input: &str) -> String {
+    format!("{:x}", Sha256::digest(input.as_bytes()))
 }
 
 pub fn matches_registration_session(owner: u64, stored: &str, supplied: &str) -> bool {

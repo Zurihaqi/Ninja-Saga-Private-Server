@@ -33,11 +33,11 @@ cargo run -p game-server --locked
 
 On a normally configured Rust installation, omit the first line. Windows GNU needs binutils/GCC. The local helper enables Rust's bundled runtime libraries to avoid a `libgcc_eh` linker mismatch.
 
-Game listens on `127.0.0.1:8080`; chat/PvP process shells default to ports 3002/3000. Override `BIND_ADDR` with an IP and port; use `RUST_LOG` to configure structured logs. `/health/live` reports process liveness. `/health/ready` returns 503 until database/protocol acceptance is implemented.
+Game listens on `127.0.0.1:8080`; chat/PvP default to ports 3002/3000. They now implement authenticated polling services, with actual-client multiplayer acceptance still pending. Override `BIND_ADDR` with an IP and port; use `RUST_LOG` to configure logs. `/health/live` reports liveness; `/health/ready` remains 503 pending production acceptance.
 
-`/amf` and `/gateway.php` support accounts, characters, equipment/points, shops, normal and advanced academy, skill presets, mission rewards, all four rank exams through Ninja Tutor, pets with mission XP, NPC recruitment, 65 blacksmith recipes, consumables, talent discovery/upgrades/resets, Sage Mode discovery/upgrades/equipment, and Special Jounin class changes. These flows have headless AMF/MySQL coverage; first-mission gameplay is also verified in AIR. Social systems, production PvP/chat, secondary battle modes, events and administration remain incomplete. Unimplemented methods return explicit errors. See [progress](docs/migration/progress.md), [codec limits](crates/amf-codec/README.md) and [local setup](docs/local-development.md).
+`/amf` and `/gateway.php` cover character progression, shops/animations, academy, exams, pets, crafting, daily/market modes, hunting, friends/mail, Shadow War and seasonal events. Clan/crew and administrative HTTP APIs and a React admin dashboard are also implemented. Headless tests cover representative flows; first-mission gameplay is verified in AIR/Ruffle desktop. Later client acceptance, complete clan/crew integration, real-client multiplayer and production operations remain open. See [progress](docs/migration/progress.md), [codec limits](crates/amf-codec/README.md) and [local setup](docs/local-development.md).
 
-For the already configured workstation, `./scripts/start-local.ps1` starts the Rust backend; the test client is `.tools/client/NSCUSTOM.exe`. MySQL must be running on loopback port 3307. Build before starting the server; Windows cannot replace a running executable.
+On the configured workstation, build the Rust workspace and [browser client](apps/web-client/README.md), apply additive migrations with `DATABASE_URL` set, then use `./scripts/start-local.ps1 -IncludeRealtime`. Play at `http://127.0.0.1:8080/app/` or use `.tools/client/NSCUSTOM.exe`. The admin dashboard is `http://127.0.0.1:8080/admin`; use an admin account or the unique ignored `.tools/admin-secret.txt` created by the local helper. MySQL uses loopback port 3307. Stop the relevant process before rebuilding its executable on Windows.
 
 ## Verify and regenerate
 
@@ -57,7 +57,7 @@ php tests/compatibility/generate-gateway-fixtures.php
 
 Generators require the [pinned reference checkout](reference/README.md). Checked-in golden fixtures allow Rust tests to run without PHP or the reference checkout.
 
-The [headless gameplay suite](tests/compatibility/gameplay/README.md) is the default regression workflow. It replays AMF calls and checks persistence without launching, recording or interacting with the game window. Actual-client checks are reserved for visual behavior and protocol acceptance.
+The [headless gameplay suite](tests/compatibility/gameplay/README.md) is the default regression workflow. It checks AMF/persistence without launching or recording the game. Both helper modes use dedicated test schemas, including original-catalog testing, because the expanded suite also changes global event/config fixtures. Actual-client checks remain necessary for rendered behavior and multiplayer acceptance.
 
 `docker compose -f infra/compose.yaml up --build` describes the foundation services. Optional `--profile database` requires a unique `MYSQL_PASSWORD`; it creates an isolated test database on localhost port 3307. No migrations run automatically. Docker is unavailable on the current workstation, so container execution is unverified. Image digests, deployment health checks and release hardening remain pending.
 

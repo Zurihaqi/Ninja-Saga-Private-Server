@@ -11,6 +11,8 @@ The Rust version is a local PvE preview. The first mission was played successful
 
 A fresh Git clone does not include the AIR runtime, SWF assets, local toolchain or database. Complete [local setup](local-development.md) and [reference setup](../reference/README.md) first. Running the backend without `DATABASE_URL` only provides diagnostic endpoints.
 
+The browser game is `http://127.0.0.1:8080/app/`. The admin dashboard is `http://127.0.0.1:8080/admin`, redirecting to `/app/#admin`. Build the [web client](../apps/web-client/README.md) and start the backend first. Admin login accepts an admin account or the unique configured secret; the local launcher stores its generated secret in ignored `.tools/admin-secret.txt`.
+
 ## First session
 
 1. Open the profile and spend the available attribute points. The total allocated plus free points must equal your character level.
@@ -36,7 +38,7 @@ Pets can be bought before use, but equipping requires Chunin or higher. Equipped
 
 The blacksmith supports 65 reference recipes. Gold forging consumes the recipe's materials and base weapon; token forging consumes the base weapon and token cost. Talents support discovery, TP upgrades/packages and paid resets. Sage Mode discovery requires level 80 and 2,000,000 gold; Sage skill upgrades spend SS. Advanced academy upgrades follow configured prerequisite chains.
 
-These later systems have headless verification, rather than complete AIR acceptance. Natural TP/SS/material farming, secondary battle modes, friends/mail/clans/crews, production PvP/chat, events, pet training/combining and administration are still incomplete. A complete progression economy is not yet available.
+Later systems have headless coverage rather than complete client acceptance. Daily rewards, markets, hunting, Shadow War, friends/mail, pet training/combining, events, realtime polling and administration now have implementation; check [current progress](migration/progress.md) for remaining clan/crew integration, staged S missions, natural resource progression and two-client multiplayer acceptance.
 
 ## Troubleshooting
 

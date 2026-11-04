@@ -388,3 +388,344 @@ pub async fn set_points(pool: &MySqlPool, args: &[Json]) -> Result {
     tx.commit().await?;
     Ok(json!({"status":1,"error":0}))
 }
+
+// -----------------------------------------------------------------------------
+// AccountService & DevToolsService methods on Character.*
+// -----------------------------------------------------------------------------
+
+pub async fn delete_character(pool: &MySqlPool, args: &[Json]) -> Result {
+    let char_id = integer(args, 0);
+    let session_key = string(args, 1);
+    let username = string(args, 2);
+    let password = string(args, 3);
+    if let Some(error) = guard(pool, char_id, &session_key, true).await? {
+        return Ok(error);
+    }
+    let Some(user) = sqlx::query("SELECT id, password FROM users WHERE username=? LIMIT 1")
+        .bind(&username)
+        .fetch_optional(pool)
+        .await?
+    else {
+        return Ok(json!({"status": 2, "result": "Invalid password!"}));
+    };
+    let hash: String = user.try_get("password")?;
+    let valid =
+        tokio::task::spawn_blocking(move || authentication::verify_password(&password, &hash))
+            .await
+            .unwrap_or(false);
+    if !valid {
+        return Ok(json!({"status": 2, "result": "Invalid password!"}));
+    }
+    let user_id: u64 = user.try_get("id")?;
+    let res = sqlx::query("DELETE FROM characters WHERE id=? AND user_id=?")
+        .bind(char_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    if res.rows_affected() == 0 {
+        return Ok(json!({"status": 2, "result": "Character not found!"}));
+    }
+    Ok(json!({"status": 1}))
+}
+
+pub async fn convert_tokens_to_gold(pool: &MySqlPool, args: &[Json]) -> Result {
+    // Params: [sessionKey, charId, tokenAmount]
+    let session_key = string(args, 0);
+    let char_id = integer(args, 1);
+    let amount = integer(args, 2);
+    if let Some(error) = guard(pool, char_id, &session_key, true).await? {
+        return Ok(error);
+    }
+    if amount < 1 {
+        return Ok(json!({"status": 2, "result": "Please Insert At Least 1 Token!"}));
+    }
+    if amount > 1_000_000 {
+        return Ok(json!({"status": 2, "result": "Maximum conversion is 1,000,000 tokens."}));
+    }
+    let mut tx = pool.begin().await?;
+    let Some(row) = sqlx::query(
+        "SELECT c.gold, c.user_id, u.tokens FROM characters c JOIN users u ON u.id=c.user_id WHERE c.id=? FOR UPDATE",
+    )
+    .bind(char_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        return Ok(json!({"status": 0, "error": "Character not found."}));
+    };
+    let tokens = i64::from(row.try_get::<i32, _>("tokens")?);
+    if tokens < amount {
+        return Ok(json!({"status": 2, "result": "Not enough tokens!"}));
+    }
+    let new_tokens = i32::try_from(tokens - amount).unwrap_or(0);
+    let current_gold = i64::from(row.try_get::<i32, _>("gold")?);
+    let new_gold = i32::try_from(
+        current_gold
+            .saturating_add(amount.saturating_mul(1000))
+            .min(i64::from(i32::MAX)),
+    )
+    .unwrap_or(i32::MAX);
+    let user_id: u64 = row.try_get("user_id")?;
+
+    sqlx::query("UPDATE users SET tokens=?, updated_at=NOW() WHERE id=?")
+        .bind(new_tokens)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE characters SET gold=?, updated_at=NOW() WHERE id=?")
+        .bind(new_gold)
+        .bind(char_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    Ok(json!({
+        "status": 1,
+        "character_gold": new_gold,
+        "account_tokens": new_tokens
+    }))
+}
+
+pub async fn rename_character(pool: &MySqlPool, args: &[Json]) -> Result {
+    let first_str = string(args, 0);
+    let second_str = string(args, 1);
+    let (char_id, session_key) =
+        if first_str.len() == 32 && args.get(1).is_some_and(|v| v.is_number()) {
+            (integer(args, 1), first_str)
+        } else {
+            (integer(args, 0), second_str)
+        };
+    let new_name = string(args, 2).trim().to_owned();
+    if let Some(error) = guard(pool, char_id, &session_key, true).await? {
+        return Ok(error);
+    }
+    if new_name.len() < 2 {
+        return Ok(json!({"status": 2, "error": "Character name too short."}));
+    }
+    let mut tx = pool.begin().await?;
+    let Some(row) = sqlx::query(
+        "SELECT c.name, u.account_type FROM characters c JOIN users u ON u.id=c.user_id WHERE c.id=? FOR UPDATE",
+    )
+    .bind(char_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        return Ok(json!({"status": 0, "error": "Character not found."}));
+    };
+    let current_name: String = row.try_get("name")?;
+    if current_name.eq_ignore_ascii_case(&new_name) {
+        return Ok(json!({"status": 2, "result": "Name is unchanged."}));
+    }
+    let taken: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM characters WHERE name=? AND id!=?")
+        .bind(&new_name)
+        .bind(char_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    if taken > 0 {
+        return Ok(json!({"status": 2, "error": "Character name already taken."}));
+    }
+    let account_type: i8 = row.try_get("account_type")?;
+    let required_qty = if account_type >= 1 { 1 } else { 3 };
+    if !crate::inventory::take(&mut tx, char_id, "essential_01", required_qty).await? {
+        return Ok(json!({
+            "status": 2,
+            "result": format!("You need {required_qty} Rename Badge(s) to rename your character.")
+        }));
+    }
+    sqlx::query("UPDATE characters SET name=?, updated_at=NOW() WHERE id=?")
+        .bind(&new_name)
+        .bind(char_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(json!({"status": 1}))
+}
+
+pub async fn dev_add_items(pool: &MySqlPool, args: &[Json]) -> Result {
+    let char_id = integer(args, 0);
+    let session_key = string(args, 1);
+    let item_string = string(args, 2);
+    if let Some(error) = guard(pool, char_id, &session_key, true).await? {
+        return Ok(error);
+    }
+    let mut tx = pool.begin().await?;
+    let Some(account_type) = sqlx::query_scalar::<_, i8>(
+        "SELECT u.account_type FROM characters c JOIN users u ON u.id=c.user_id WHERE c.id=? FOR UPDATE",
+    )
+    .bind(char_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        return Ok(json!({"status": 0, "error": "Character not found"}));
+    };
+    if account_type != 99 {
+        return Ok(json!({"status": 0, "error": "Permission denied."}));
+    }
+    for part in item_string
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let (item_id, qty) = part
+            .split_once(':')
+            .map_or((part, 1), |(i, q)| (i, q.parse::<i64>().unwrap_or(1)));
+        crate::rewards::give_item(&mut tx, char_id, item_id, qty.max(1)).await?;
+    }
+    tx.commit().await?;
+    Ok(json!({
+        "status": 1,
+        "result": "Items added successfully!",
+        "items": item_string
+    }))
+}
+
+pub async fn dev_set_char_info(pool: &MySqlPool, args: &[Json]) -> Result {
+    let char_id = integer(args, 0);
+    let session_key = string(args, 1);
+    let level = integer(args, 2);
+    let rank_raw = integer(args, 3);
+    if let Some(error) = guard(pool, char_id, &session_key, true).await? {
+        return Ok(error);
+    }
+    let Some(account_type) = sqlx::query_scalar::<_, i8>(
+        "SELECT u.account_type FROM characters c JOIN users u ON u.id=c.user_id WHERE c.id=?",
+    )
+    .bind(char_id)
+    .fetch_optional(pool)
+    .await?
+    else {
+        return Ok(json!({"status": 0, "error": "Character not found"}));
+    };
+    if account_type != 99 {
+        return Ok(json!({"status": 0, "error": "Permission denied."}));
+    }
+    let final_rank = match rank_raw {
+        1 => 1,
+        2 => 3,
+        3 => 5,
+        4 => 7,
+        r => r,
+    };
+    sqlx::query("UPDATE characters SET level=?, `rank`=?, updated_at=NOW() WHERE id=?")
+        .bind(level)
+        .bind(final_rank)
+        .bind(char_id)
+        .execute(pool)
+        .await?;
+    Ok(json!({"status": 1, "result": "Character updated!"}))
+}
+
+pub async fn dev_toggle_emblem(pool: &MySqlPool, args: &[Json]) -> Result {
+    let char_id = integer(args, 0);
+    let session_key = string(args, 1);
+    if let Some(error) = guard(pool, char_id, &session_key, true).await? {
+        return Ok(error);
+    }
+    let Some(row) = sqlx::query(
+        "SELECT c.user_id, u.account_type FROM characters c JOIN users u ON u.id=c.user_id WHERE c.id=?",
+    )
+    .bind(char_id)
+    .fetch_optional(pool)
+    .await?
+    else {
+        return Ok(json!({"status": 0, "error": "Character not found"}));
+    };
+    let account_type: i8 = row.try_get("account_type")?;
+    if account_type != 99 {
+        return Ok(json!({"status": 0, "error": "Permission denied."}));
+    }
+    let user_id: u64 = row.try_get("user_id")?;
+    let next_type = if account_type == 1 { 0 } else { 1 };
+    sqlx::query("UPDATE users SET account_type=?, updated_at=NOW() WHERE id=?")
+        .bind(next_type)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    let status = if next_type == 1 { "Premium" } else { "Free" };
+    Ok(json!({"status": 1, "result": format!("Account status: {status}")}))
+}
+
+pub async fn dev_learn_skill(pool: &MySqlPool, args: &[Json]) -> Result {
+    let char_id = integer(args, 0);
+    let session_key = string(args, 1);
+    let skill_id = string(args, 2);
+    if let Some(error) = guard(pool, char_id, &session_key, true).await? {
+        return Ok(error);
+    }
+    let mut tx = pool.begin().await?;
+    let Some(row) = sqlx::query(
+        "SELECT c.level, c.element_1, c.element_2, c.element_3, u.account_type FROM characters c JOIN users u ON u.id=c.user_id WHERE c.id=? FOR UPDATE",
+    )
+    .bind(char_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        return Ok(json!({"status": 0, "error": "Character not found"}));
+    };
+    let account_type: i8 = row.try_get("account_type")?;
+    if account_type != 99 {
+        return Ok(json!({"status": 0, "error": "Permission denied."}));
+    }
+    let exists: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM character_skills WHERE character_id=? AND skill_id=?",
+    )
+    .bind(char_id)
+    .bind(&skill_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if exists > 0 {
+        return Ok(json!({"status": 2}));
+    }
+    let Some(skill) = sqlx::query("SELECT level, element FROM skills WHERE skill_id=? LIMIT 1")
+        .bind(&skill_id)
+        .fetch_optional(&mut *tx)
+        .await?
+    else {
+        return Ok(json!({"status": 0, "error": "Skill data not found!"}));
+    };
+    let char_lvl: i32 = row.try_get("level")?;
+    let skill_lvl: i32 = skill.try_get("level")?;
+    if char_lvl < skill_lvl {
+        return Ok(json!({"status": 5}));
+    }
+    let mut e1: i32 = row.try_get("element_1")?;
+    let mut e2: i32 = row.try_get("element_2")?;
+    let mut e3: i32 = row.try_get("element_3")?;
+    let element: i32 = skill.try_get("element")?;
+    if (1..=5).contains(&element) && ![e1, e2, e3].contains(&element) {
+        if e1 == 0 {
+            e1 = element;
+        } else if e2 == 0 {
+            e2 = element;
+        } else if e3 == 0 {
+            e3 = element;
+        } else {
+            return Ok(json!({"status": 4}));
+        }
+        sqlx::query(
+            "UPDATE characters SET element_1=?, element_2=?, element_3=?, updated_at=NOW() WHERE id=?",
+        )
+        .bind(e1)
+        .bind(e2)
+        .bind(e3)
+        .bind(char_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    sqlx::query(
+        "INSERT INTO character_skills (character_id, skill_id, created_at, updated_at) VALUES (?, ?, NOW(), NOW())",
+    )
+    .bind(char_id)
+    .bind(&skill_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(json!({
+        "status": 1,
+        "result": "Skill learned.",
+        "data": {
+            "character_element_1": e1,
+            "character_element_2": e2,
+            "character_element_3": e3
+        }
+    }))
+}

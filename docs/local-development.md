@@ -17,10 +17,16 @@ With the game server stopped, build and start:
 ```powershell
 . ./scripts/dev-env.ps1
 cargo build -p game-server --bin game-server --locked
-./scripts/start-local.ps1
+./scripts/migrate-local.ps1
+npm run build --prefix apps/web-client
+./scripts/start-local.ps1 -IncludeRealtime
 ```
 
-Launch `.tools/client/NSCUSTOM.exe`. Synthetic local login details are in `.tools/local-account.json`. The Rust server uses `ninja_rust_test`; the original Laravel migration/seed reference uses `ninja_reference`. Server logs are `.tools/game-server.log` and `.tools/game-server.err`. Do not start a second server while port 8080 is in use.
+Use `cargo build --workspace --locked` when starting chat/PvP too; the command above builds only the game executable. Install locked frontend dependencies with `npm ci --prefix apps/web-client --ignore-scripts` before its first build. The migration helper explicitly applies additive schema extensions to `ninja_rust_test`; it does not reimport catalogs or reset player data.
+
+Open `http://127.0.0.1:8080/app/`, or launch `.tools/client/NSCUSTOM.exe`. Synthetic game login details are in `.tools/local-account.json`. The admin dashboard is `http://127.0.0.1:8080/admin`: use an admin account (`account_type=99`) or the unique ignored `.tools/admin-secret.txt` created by the local helper. There is no built-in admin password. Do not commit the secret. `-IncludeRealtime` starts authenticated polling chat/PvP on ports 3002/3000.
+
+The playable server uses `ninja_rust_test`; original migration/seed reference uses `ninja_reference`. Logs and PID files are `.tools/<service>.log`, `.err` and `.pid`. Stop the relevant workspace process before rebuilding it on Windows; restarting drops unfinished battle sessions but preserves committed player data.
 
 ## Test without the game window
 
@@ -29,7 +35,7 @@ Launch `.tools/client/NSCUSTOM.exe`. Synthetic local login details are in `.tool
 ./scripts/test-gameplay.ps1 -ReferenceCatalog
 ```
 
-This tests the saved gameplay loops listed in the [test contract](../tests/compatibility/gameplay/README.md), using a uniquely named synthetic account deleted on success. The second command reads original JSON catalogs; the first uses minimal checked-in JSON. Neither changes existing player accounts or interacts with the desktop. CI uses a separate `ninja_ci_test` schema and minimal fixtures.
+Both modes use dedicated schemas and create uniquely named synthetic accounts deleted on success. Minimal fixtures use `ninja_ci_test`; `-ReferenceCatalog` imports the original catalog export into `ninja_ci_reference_test`. The suite changes event/config fixtures as well as synthetic players, so the helper never targets the playable database. See the [test contract](../tests/compatibility/gameplay/README.md).
 
 ## Reproduce the reference and import
 
@@ -48,4 +54,4 @@ The client preparation script copies the original client into `.tools/client`, c
 
 ## Current boundaries
 
-First-mission PvE is verified in AIR. Exams, pets, NPC recruits, crafting, consumables, talents, Sage Mode, shops, academy and character progression have headless coverage. Secondary battle/reward modes, social features, PvP/chat, events and administration remain incomplete. See [progress](migration/progress.md). Readiness still reports 503 pending wider compatibility acceptance. Docker definitions have not been executed locally. Mission tokens are in memory and expire after 30 minutes; a backend restart invalidates an unfinished mission, while committed rewards and characters remain in MySQL.
+Broad gameplay, social/event/admin APIs and realtime polling now have implementation and headless coverage. Later actual-client progression, full clan/crew integration, two-client multiplayer, staged S missions and production operations remain open; see [progress](migration/progress.md). Readiness still reports 503. Docker execution is unverified. Battle sessions are in memory and expire or clear on restart.

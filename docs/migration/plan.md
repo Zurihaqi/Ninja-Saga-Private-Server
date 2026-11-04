@@ -2,7 +2,7 @@
 
 **Version:** 1.0
 **Created:** November 3, 2026
-**Status:** Core playability in progress — first mission verified in AIR; shops, exams, companions, crafting, talents and Sage Mode implemented and headless-tested. Prioritize remaining gameplay loops before lower-priority polish. See [progress](progress.md).
+**Status:** Integration and acceptance in progress — broad gameplay/social/event/admin/realtime implementation, React/Ruffle host, remaining player actions and authorization fixes integrated. First mission verified in AIR/Ruffle desktop; full client and production acceptance remain open. See [progress](progress.md).
 **Project Type:** Full backend rewrite
 **Target Language:** Rust
 **Development Approach:** Multi-agent engineering
@@ -103,7 +103,7 @@ The repository was inspected on November 3, 2026.
 | PvP server | Node.js |
 | Chat server | Node.js |
 | Realtime communication | Socket.IO |
-| Game client | Adobe AIR / Flash |
+| Game client | Adobe AIR / Flash; Ruffle feasibility proven, see [ruffle spike](../research/ruffle-client-spike.md) |
 | Game protocol | AMF0 / AMF3 |
 | Frontend tooling | Vite |
 | Database migrations | 34 migration files |
