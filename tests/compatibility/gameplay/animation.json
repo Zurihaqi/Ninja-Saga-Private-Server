@@ -1,0 +1,4 @@
+[
+  {"id":"ani_1","name":"Dodge","category":"dodge","price":0,"buyable":false,"premium":false},
+  {"id":"ani_2","name":"Dodge Snowman","category":"dodge","price":1000,"buyable":true,"premium":false}
+]

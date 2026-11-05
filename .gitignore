@@ -1,0 +1,15 @@
+/target/
+/.tools/
+/reference/upstream/
+**/node_modules/
+**/dist/
+/apps/web-client/public/ruffle/
+**/vendor/
+.env
+*.log
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+/.vscode/
+/.idea/

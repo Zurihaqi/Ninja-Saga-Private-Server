@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Ninja Saga (local)</title>
+        <style>
+            html,
+            body {
+                margin: 0;
+                padding: 0;
+                height: 100%;
+                background: #000;
+                overflow: hidden;
+            }
+            #root,
+            .swf-container {
+                width: 100%;
+                height: 100%;
+            }
+            .ruffle-player {
+                width: 100%;
+                height: 100%;
+            }
+        </style>
+        <!--
+            Ruffle configuration must exist before ruffle.js evaluates: the
+            self-hosted bundle reads window.RufflePlayer.config during install.
+            publicPath is where ruffle.js finds core.ruffle.*.js and the wasm
+            payloads (copied from the npm package by scripts/sync-ruffle.mjs).
+            playerRuntime "air" mirrors the desktop spike flags
+            (--player-runtime air); the movie URL and every asset prefix stay
+            same-origin with the Rust game server, so no spoofing is needed.
+        -->
+        <script>
+            // Relative asset URLs (sounds/, swfpanels/, fonts, ...) must resolve
+            // from the server root like the desktop --base flag, not from /app/.
+            window.RufflePlayer = window.RufflePlayer || {};
+            window.RufflePlayer.config = {
+                playerRuntime: "air",
+                autoplay: "on",
+                unmuteOverlay: "visible",
+                logLevel: "warn",
+                base: location.origin + "/",
+                publicPath: "/app/ruffle/",
+                allowScriptAccess: false,
+                upgradeToHttps: false,
+                warnOnUnsupportedContent: false,
+                urlRewriteRules: [
+                    [/^https?:\/\/127\.0\.0\.1:8080\//, location.origin + "/"],
+                    [/^(?:https?:\/\/[^/]+\/)?undefined/, location.origin + "/"],
+                ],
+            };
+        </script>
+        <script src="/app/ruffle/ruffle.js"></script>
+    </head>
+    <body>
+        <div id="root"></div>
+        <script type="module" src="/src/main.tsx"></script>
+    </body>
+</html>
