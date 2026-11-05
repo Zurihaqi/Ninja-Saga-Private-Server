@@ -6,12 +6,18 @@ from pathlib import Path
 import lzma
 import shutil
 import struct
+import subprocess
+import sys
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'reference/upstream/Custom Client/NS Custom Client V1'
 TARGET = ROOT / '.tools/client'
 REPLACEMENTS = {
+    'https://ninjasage.id/merchants': 'http://127.0.0.1:8080/app/',
+    'https://ninjasage.id/en/merchants?buy-now': 'http://127.0.0.1:8080/app/',
+    'https://ninjasage.test/clan': 'http://127.0.0.1:8080/clan',
+    'https://ninjasage.test/crew': 'http://127.0.0.1:8080/crew',
     'https://ninjasage.test/amf': 'http://127.0.0.1:8080/amf',
     'https://ninjasage.test/game_data/': 'http://127.0.0.1:8080/game_data/',
     'https://ninjasage.id/api/id-custom-color': 'http://127.0.0.1:8080/api/id-custom-color',
@@ -110,3 +116,5 @@ if __name__ == '__main__':
     xml = xml.replace('<fullScreen>true</fullScreen>', '<fullScreen>false</fullScreen>')
     manifest.write_text(xml, encoding='utf8')
     print(f'Prepared local client; replaced {len(changed)} endpoint constants. Reference files unchanged.')
+    # A fresh copy must include the panel fixes and free-product actions too.
+    subprocess.run([sys.executable, str(ROOT / 'scripts/patch-client-panels.py')], cwd=ROOT, check=True)

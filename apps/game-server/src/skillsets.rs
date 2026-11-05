@@ -24,9 +24,6 @@ pub async fn create(pool: &MySqlPool, args: &[Json]) -> Result {
     }
     let mut tx = pool.begin().await?;
     let row=sqlx::query("SELECT c.user_id,c.equipment_skills,u.account_type,u.tokens FROM characters c JOIN users u ON u.id=c.user_id WHERE c.id=? FOR UPDATE").bind(id).fetch_one(&mut *tx).await?;
-    if row.try_get::<i8, _>("account_type")? == 0 {
-        return Ok(json!({"status":2,"result":"Premium required to unlock Skill Sets!"}));
-    }
     let count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM character_skill_sets WHERE character_id=?")
             .bind(id)
@@ -35,7 +32,15 @@ pub async fn create(pool: &MySqlPool, args: &[Json]) -> Result {
     if count >= 4 {
         return Ok(json!({"status":2,"result":"Maximum 4 presets allowed!"}));
     }
-    let cost = count * 100;
+    // UI_Skillset.buyConfirmation: the first slot is free for every account;
+    // every additional slot costs 200 for emblem accounts, 600 otherwise.
+    let cost = if count == 0 {
+        0
+    } else if row.try_get::<i8, _>("account_type")? > 0 {
+        200
+    } else {
+        600
+    };
     let tokens = i64::from(row.try_get::<i32, _>("tokens")?);
     if tokens < cost {
         return Ok(json!({"status":2,"result":"Not enough tokens!"}));
@@ -55,10 +60,9 @@ pub async fn save(pool: &MySqlPool, args: &[Json]) -> Result {
         return Ok(e);
     }
     let preset = integer(args, 2);
-    let skills = string(args, 3);
-    if skills.len() > 4096 || skills.split(',').count() > 8 {
-        return Ok(json!({"status":2,"error":"Invalid skill set"}));
-    }
+    let Some(skills) = validated_loadout(&string(args, 3)) else {
+        return Ok(json!({"status":2,"result":"Choose between 1 and 8 different skills."}));
+    };
     let mut tx = pool.begin().await?;
     sqlx::query("SELECT id FROM characters WHERE id=? FOR UPDATE")
         .bind(id)
@@ -83,7 +87,7 @@ pub async fn save(pool: &MySqlPool, args: &[Json]) -> Result {
         .fetch_one(&mut *tx)
         .await?;
         if owned == 0 {
-            return Ok(json!({"status":2,"error":"Skill is not owned"}));
+            return Ok(json!({"status":2,"result":"A selected skill is not owned."}));
         }
     }
     sqlx::query(
@@ -101,4 +105,45 @@ pub async fn save(pool: &MySqlPool, args: &[Json]) -> Result {
         .await?;
     tx.commit().await?;
     list(pool, args).await
+}
+
+/// Preserve ordering while rejecting invalid empty/duplicate loadouts. Flash can
+/// leave blank separators when editing a preset, which are not actual skill IDs.
+pub(crate) fn validated_loadout(raw: &str) -> Option<String> {
+    if raw.len() > 4096 {
+        return None;
+    }
+    let mut skills = Vec::new();
+    for skill in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if !skill.starts_with("skill_") || skills.contains(&skill) || skills.len() == 8 {
+            return None;
+        }
+        skills.push(skill);
+    }
+    if skills.is_empty() {
+        None
+    } else {
+        Some(skills.join(","))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validated_loadout;
+    #[test]
+    fn edited_loadouts_keep_order_without_empty_or_duplicate_skills() {
+        assert_eq!(
+            validated_loadout(" skill_13,,skill_01, "),
+            Some("skill_13,skill_01".into())
+        );
+        assert_eq!(validated_loadout("skill_13,skill_13"), None);
+        assert_eq!(validated_loadout(""), None);
+        assert_eq!(validated_loadout("wpn_01"), None);
+        assert_eq!(
+            validated_loadout(
+                "skill_1,skill_2,skill_3,skill_4,skill_5,skill_6,skill_7,skill_8,skill_9"
+            ),
+            None
+        );
+    }
 }

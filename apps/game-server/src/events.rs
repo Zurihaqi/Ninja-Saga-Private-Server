@@ -109,12 +109,15 @@ pub async fn get(pool: &MySqlPool, args: &[Json]) -> Result {
             "package" => {
                 // Only the first active package (lowest sort_order/id) is surfaced.
                 if package.is_none() {
-                    let content = row
+                    let mut content = row
                         .try_get::<Option<Json>, _>("data")
                         .ok()
                         .flatten()
                         .and_then(|data| data.get("content").cloned())
                         .unwrap_or(json!([]));
+                    for product in content.as_array_mut().into_iter().flatten() {
+                        product["price"] = json!("Free");
+                    }
                     package = Some(json!({
                         "name": title,
                         "date": row.get::<Option<String>, _>("date"),

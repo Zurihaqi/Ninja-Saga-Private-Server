@@ -11,6 +11,16 @@ async fn main() -> shared::ServerResult {
     ))
     .execute(&pool)
     .await?;
-    println!("Applied additive migration 001_pet_skills. Existing player rows were preserved.");
+    persistence::sqlx::raw_sql(include_str!(
+        "../../../../database/migrations/002_gear_presets.sql"
+    ))
+    .execute(&pool)
+    .await?;
+    persistence::sqlx::raw_sql(include_str!(
+        "../../../../database/migrations/003_free_products.sql"
+    ))
+    .execute(&pool)
+    .await?;
+    println!("Applied additive player-state migrations. Existing player rows were preserved.");
     Ok(())
 }

@@ -38,7 +38,15 @@ Pets can be bought before use, but equipping requires Chunin or higher. Equipped
 
 The blacksmith supports 65 reference recipes. Gold forging consumes the recipe's materials and base weapon; token forging consumes the base weapon and token cost. Talents support discovery, TP upgrades/packages and paid resets. Sage Mode discovery requires level 80 and 2,000,000 gold; Sage skill upgrades spend SS. Advanced academy upgrades follow configured prerequisite chains.
 
-Later systems have headless coverage rather than complete client acceptance. Daily rewards, markets, hunting, Shadow War, friends/mail, pet training/combining, events, realtime polling and administration now have implementation; check [current progress](migration/progress.md) for remaining clan/crew integration, staged S missions, natural resource progression and two-client multiplayer acceptance.
+Later systems have headless coverage rather than complete client acceptance. Daily rewards, markets, hunting, Shadow War, friends/mail, pet training/combining, events, WebSocket chat/PvP and administration now have implementation; check [current progress](migration/progress.md) for remaining clan/crew integration, staged S missions, natural resource progression and two-client multiplayer acceptance.
+
+## Free products and repaired panels
+
+Restart AIR or reload the browser to load the repaired local client. The first skills tab shows all owned skills. Missing optional artwork uses a placeholder instead of locking skill selection; seven upstream skill movies remain unavailable. Skill presets have a free first slot, then cost 200 tokens for premium accounts or 600 for free accounts. Up to four presets are supported.
+
+Recharge and Emblem buttons now claim their products for free. Ancestor and the four package tiers are also free; no merchant website or real-money payment is required. Gameplay gold/token purchases still use their displayed currencies.
+
+Pet Villa cancels stale model loads, stops the hidden voice animation and refreshes training timers. Pets cannot train beyond the character level or level 85. A second Secret talent requires Special Jounin (rank 6 or higher).
 
 ## Troubleshooting
 

@@ -32,6 +32,37 @@ pub async fn dispatch(pool: &MySqlPool, method: &str, args: &[Json]) -> Result {
             .unwrap_or_default(),
     );
     let result = match method {
+        "buyPackageSS" => {
+            let (amount, cost) = match integer(args, 2) {
+                0 => (10, 20),
+                1 => (55, 100),
+                2 => (120, 200),
+                3 => (250, 400),
+                _ => return Ok(denied("Invalid Sage Scroll package.")),
+            };
+            let user_id = char.try_get::<u64, _>("user_id")?;
+            let tokens: i32 = sqlx::query_scalar("SELECT tokens FROM users WHERE id=? FOR UPDATE")
+                .bind(user_id)
+                .fetch_one(&mut *tx)
+                .await?;
+            if tokens < cost {
+                return Ok(denied("Not enough tokens."));
+            }
+            let Some(ss) = char.try_get::<i32, _>("ss")?.checked_add(amount) else {
+                return Ok(denied("SS limit reached."));
+            };
+            sqlx::query("UPDATE users SET tokens=tokens-?,updated_at=NOW() WHERE id=?")
+                .bind(cost)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("UPDATE characters SET ss=?,updated_at=NOW() WHERE id=?")
+                .bind(ss)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            json!({"status":1,"ss":ss,"result":"Sage Scrolls purchased."})
+        }
         "getSenjutsuSkills" => {
             let data:Vec<_>=owned.iter().map(|(id,level)|{
                 let entry=crate::economy::catalog_entry("senjutsu",&format!("{id}:1"));
@@ -78,7 +109,7 @@ pub async fn dispatch(pool: &MySqlPool, method: &str, args: &[Json]) -> Result {
                 return Ok(denied("Already at maximum level!"));
             }
             let ss = char.try_get::<i32, _>("ss")?;
-            let max = args.get(3).is_some_and(|v| v == true || v == 1);
+            let max = integer(args, 3) == 1 || args.get(3) == Some(&Json::Bool(true));
             let mut spent = 0;
             let mut level = current;
             for next in current + 1..=10 {

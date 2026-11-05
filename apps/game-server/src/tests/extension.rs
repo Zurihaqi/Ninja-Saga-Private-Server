@@ -215,6 +215,9 @@ pub async fn progression_and_companions(app: &Router, pool: &MySqlPool, id: u64,
     assert_eq!(pets["pets"][0]["pet_name"], "Renamed");
     assert_eq!(pets["pets"][0]["pet_xp"], 20);
     super::player_actions::run(&fresh, pool, id, key, pet).await;
+    super::client_panels::run(&fresh, pool, id, key).await;
+    super::skills_repair::run(&fresh, pool, id, key).await;
+    super::pet_villa_repair::run(&fresh, pool, id, key).await;
     assert_eq!(
         amf_call(
             &fresh,
@@ -1246,7 +1249,12 @@ async fn events_seasonal_pvp_and_http(app: &Router, pool: &MySqlPool, id: u64, k
     let mh_start = amf_call(
         app,
         "MonsterHunterEvent2023.startBattle",
-        json!([id, "ene_01", 10, "", "h", key]),
+        json!([
+            id,
+            "ene_01",
+            authentication::sha256_hex(&format!("{id}ene_01")),
+            key
+        ]),
     )
     .await;
     assert_eq!(mh_start["status"], 1, "{mh_start}");
@@ -1254,7 +1262,15 @@ async fn events_seasonal_pvp_and_http(app: &Router, pool: &MySqlPool, id: u64, k
     let mh_fin = amf_call(
         app,
         "MonsterHunterEvent2023.finishBattle",
-        json!([id, "ene_01", mh_code, 500, "", 1, "h", key]),
+        json!([
+            id,
+            "ene_01",
+            mh_code,
+            500,
+            authentication::sha256_hex(&format!("{id}ene_01{mh_code}5001")),
+            1,
+            key
+        ]),
     )
     .await;
     assert_eq!(mh_fin["status"], 1, "{mh_fin}");
@@ -1265,7 +1281,14 @@ async fn events_seasonal_pvp_and_http(app: &Router, pool: &MySqlPool, id: u64, k
     let hw_start = amf_call(
         app,
         "HalloweenEvent2025.startBattle",
-        json!([id, 0, "h", key]),
+        json!([
+            id,
+            "ene_01",
+            10,
+            "stats",
+            authentication::sha256_hex(&format!("{id}ene_01stats10")),
+            key
+        ]),
     )
     .await;
     assert_eq!(hw_start["status"], 1, "{hw_start}");
@@ -1273,7 +1296,15 @@ async fn events_seasonal_pvp_and_http(app: &Router, pool: &MySqlPool, id: u64, k
     let hw_fin = amf_call(
         app,
         "HalloweenEvent2025.finishBattle",
-        json!([id, "ene_01", hw_code, 500, "", 1, "h", key]),
+        json!([
+            id,
+            "ene_01",
+            hw_code,
+            500,
+            authentication::sha256_hex(&format!("{id}ene_01{hw_code}5001")),
+            1,
+            key
+        ]),
     )
     .await;
     assert_eq!(hw_fin["status"], 1, "{hw_fin}");

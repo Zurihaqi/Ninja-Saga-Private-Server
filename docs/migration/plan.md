@@ -2,7 +2,7 @@
 
 **Version:** 1.0
 **Created:** November 3, 2026
-**Status:** Integration and acceptance in progress — broad gameplay/social/event/admin/realtime implementation, React/Ruffle host, remaining player actions and authorization fixes integrated. First mission verified in AIR/Ruffle desktop; full client and production acceptance remain open. See [progress](progress.md).
+**Status:** November 5 client repair integration — skill/Pet Villa movie repairs, WebSocket realtime, corrected event/social contracts and free former real-money products. Headless regressions pass; full real-client and production acceptance remain open. See [progress](progress.md).
 **Project Type:** Full backend rewrite
 **Target Language:** Rust
 **Development Approach:** Multi-agent engineering

@@ -21,6 +21,10 @@ Start with [how to play](docs/how-to-play.md), [local setup](docs/local-developm
 
 Local toolchains live in ignored `.tools/`; build artifacts live in ignored `target/`. The legacy implementation and assets remain available through the pinned upstream history and ignored reference checkout.
 
+## Current playability repairs
+
+The local client preparation now includes verified skills/Pet Villa panel repairs. Former real-money products are free local claims, including token packs and permanent Emblem. Apply the additive migrations and use the repaired local client; see [setup](docs/local-development.md) and [how to play](docs/how-to-play.md). Full event and multiplayer acceptance remains in progress.
+
 ## Run
 
 Requires Rust 1.93.0. On this workstation, an isolated toolchain and portable GNU linker were installed in ignored `.tools/`; no system PATH changes were made:
@@ -33,7 +37,7 @@ cargo run -p game-server --locked
 
 On a normally configured Rust installation, omit the first line. Windows GNU needs binutils/GCC. The local helper enables Rust's bundled runtime libraries to avoid a `libgcc_eh` linker mismatch.
 
-Game listens on `127.0.0.1:8080`; chat/PvP default to ports 3002/3000. They now implement authenticated polling services, with actual-client multiplayer acceptance still pending. Override `BIND_ADDR` with an IP and port; use `RUST_LOG` to configure logs. `/health/live` reports liveness; `/health/ready` remains 503 pending production acceptance.
+Game listens on `127.0.0.1:8080`; chat/PvP default to ports 3002/3000. They now implement authenticated WebSocket and polling services, with actual-client multiplayer acceptance still pending. Override `BIND_ADDR` with an IP and port; use `RUST_LOG` to configure logs. `/health/live` reports liveness; `/health/ready` remains 503 pending production acceptance.
 
 `/amf` and `/gateway.php` cover character progression, shops/animations, academy, exams, pets, crafting, daily/market modes, hunting, friends/mail, Shadow War and seasonal events. Clan/crew and administrative HTTP APIs and a React admin dashboard are also implemented. Headless tests cover representative flows; first-mission gameplay is verified in AIR/Ruffle desktop. Later client acceptance, complete clan/crew integration, real-client multiplayer and production operations remain open. See [progress](docs/migration/progress.md), [codec limits](crates/amf-codec/README.md) and [local setup](docs/local-development.md).
 

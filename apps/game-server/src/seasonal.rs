@@ -27,6 +27,8 @@ type Result = std::result::Result<Json, sqlx::Error>;
 #[derive(Clone, Debug)]
 pub(crate) struct EventBattle {
     pub code: String,
+    pub boss_id: String,
+    pub started: std::time::Instant,
     pub rewards_cfg: Json,
 }
 
@@ -93,10 +95,18 @@ async fn active_event_config(
             .fetch_optional(pool)
             .await?;
     Ok(row.map(|r| {
-        r.try_get::<Option<Json>, _>("data")
+        let mut cfg = r
+            .try_get::<Option<Json>, _>("data")
             .ok()
             .flatten()
-            .unwrap_or_else(|| json!({}))
+            .unwrap_or_else(|| json!({}));
+        if cfg.get("milestones").is_none() && cfg.get("milestone_battle").is_some() {
+            cfg["milestones"] = cfg["milestone_battle"].clone();
+        }
+        if cfg.get("gacha_milestones").is_none() && cfg["gacha"].get("milestone").is_some() {
+            cfg["gacha_milestones"] = cfg["gacha"]["milestone"].clone();
+        }
+        cfg
     }))
 }
 
@@ -195,12 +205,12 @@ async fn award_event_battle(
     .execute(&mut *tx)
     .await?;
 
-    let xp_base = rewards_cfg.get("xp").and_then(Json::as_i64).unwrap_or(0);
+    let xp_base = boss_amount(&rewards_cfg["xp"], level);
     let xp_mul = rewards_cfg
         .get("xp_level_multiplier")
         .and_then(Json::as_i64)
         .unwrap_or(0);
-    let gold_base = rewards_cfg.get("gold").and_then(Json::as_i64).unwrap_or(0);
+    let gold_base = boss_amount(&rewards_cfg["gold"], level);
     let gold_mul = rewards_cfg
         .get("gold_level_multiplier")
         .and_then(Json::as_i64)
@@ -227,7 +237,9 @@ async fn award_event_battle(
     let guaranteed = rewards_cfg
         .get("guaranteed")
         .and_then(Json::as_array)
-        .or_else(|| rewards_cfg.get("items").and_then(Json::as_array));
+        .or_else(|| rewards_cfg.get("items").and_then(Json::as_array))
+        .or_else(|| rewards_cfg.get("rewards").and_then(Json::as_array))
+        .or_else(|| rewards_cfg.as_array());
     if let Some(arr) = guaranteed {
         for entry in arr {
             let (raw_id, chance) = if let Some(s) = entry.as_str() {
@@ -355,9 +367,12 @@ async fn mh_get_event_data(pool: &MySqlPool, args: &[Json]) -> Result {
 async fn mh_start_battle(state: &GameState, pool: &MySqlPool, args: &[Json]) -> Result {
     let id = integer(args, 0);
     let boss_id = string(args, 1);
-    let key = string(args, 5);
+    let key = string(args, 3);
     if let Some(error) = guard(pool, id, &key, true).await? {
         return Ok(error);
+    }
+    if !auth::valid_legacy_hash(&string(args, 2), &format!("{id}{boss_id}")) {
+        return Ok(json!({"status":2,"result":"Security check failed."}));
     }
     let Some(cfg) = active_event_config(pool, "MonsterHunter").await? else {
         return Ok(json!({"status": 2, "result": "Monster Hunter event is not currently active."}));
@@ -381,6 +396,8 @@ async fn mh_start_battle(state: &GameState, pool: &MySqlPool, args: &[Json]) -> 
         (id, "monster_hunter".into()),
         EventBattle {
             code: code.clone(),
+            boss_id: boss_id.clone(),
+            started: std::time::Instant::now(),
             rewards_cfg,
         },
     );
@@ -396,28 +413,39 @@ async fn mh_finish_battle(state: &GameState, pool: &MySqlPool, args: &[Json]) ->
     let id = integer(args, 0);
     let code = string(args, 2);
     let win_flag = integer(args, 5);
-    let key = string(args, 7);
+    let key = string(args, 6);
     if let Some(error) = guard(pool, id, &key, true).await? {
         return Ok(error);
     }
-    let battle = state
-        .event_battles
-        .lock()
-        .await
-        .remove(&(id, "monster_hunter".into()));
-    let Some(battle) = battle else {
-        return Ok(json!({"status": 2, "result": "Invalid or expired battle session."}));
+    let mut battles = state.event_battles.lock().await;
+    let map_key = (id, "monster_hunter".into());
+    let Some(battle) = battles.get(&map_key) else {
+        return Ok(json!({"status":2,"result":"Invalid or expired battle session."}));
     };
-    if battle.code != code {
-        return Ok(json!({"status": 2, "result": "Invalid or expired battle session."}));
+    if battle.code != code
+        || battle.boss_id != string(args, 1)
+        || battle.started.elapsed().as_secs() >= 1800
+    {
+        return Ok(json!({"status":2,"result":"Invalid or expired battle session."}));
+    }
+    let expected = format!(
+        "{id}{}{}{}{}",
+        string(args, 1),
+        code,
+        string(args, 3),
+        string(args, 5)
+    );
+    if !auth::valid_legacy_hash(&string(args, 4), &expected) {
+        return Ok(json!({"status":2,"result":"Security check failed."}));
     }
     let row = get_or_create_event_row(pool, id, "monster_hunter", 100).await?;
     let (xp_awarded, gold_awarded, items_awarded, level, xp, level_up) =
         award_event_battle(pool, id, row.id, win_flag, &battle.rewards_cfg).await?;
+    battles.remove(&map_key);
     Ok(json!({
         "status": 1,
         "error": 0,
-        "result": [xp_awarded, gold_awarded, items_awarded],
+        "result": [xp_awarded,gold_awarded,items_awarded],
         "level": level,
         "xp": xp,
         "level_up": level_up,
@@ -457,36 +485,34 @@ async fn dh_start_battle(state: &GameState, pool: &MySqlPool, args: &[Json]) -> 
     let id = integer(args, 0);
     let boss_id = string(args, 1);
     let mode = integer(args, 2);
-    let key = string(args, 3);
+    let key = string(args, 6);
     if let Some(error) = guard(pool, id, &key, true).await? {
         return Ok(error);
+    }
+    if !(0..=2).contains(&mode)
+        || !auth::valid_legacy_hash(
+            &string(args, 5),
+            &format!("{id}{boss_id}{mode}{}{}", string(args, 4), string(args, 3)),
+        )
+    {
+        return Ok(json!({"status":2,"result":"Security check failed."}));
     }
     let Some(cfg) = active_event_config(pool, "DragonHunt").await? else {
         return Ok(json!({"status": 2, "result": "Dragon Hunt event is not currently active."}));
     };
-    let mode_costs = cfg.get("mode_costs").cloned().unwrap_or_else(|| json!({}));
     let token_cost = if mode == 2 {
-        mode_costs
-            .get("hard_token_cost")
-            .and_then(Json::as_i64)
-            .unwrap_or(50)
+        cfg["easy_mode_token_cost"].as_i64().unwrap_or(100)
     } else {
         0
     };
-    let gold_cost = if mode == 0 {
-        mode_costs
-            .get("easy_cost")
-            .and_then(Json::as_i64)
-            .unwrap_or(0)
-    } else if mode == 1 {
-        mode_costs
-            .get("normal_cost")
-            .and_then(Json::as_i64)
-            .unwrap_or(0)
+    let gold_cost = if mode == 1 {
+        cfg["normal_mode_gold_cost"].as_i64().unwrap_or(250000)
     } else {
         0
     };
-
+    if token_cost < 0 || gold_cost < 0 {
+        return Ok(json!({"status":2,"result":"Invalid Dragon Hunt price."}));
+    }
     if token_cost > 0 || gold_cost > 0 {
         let mut tx = pool.begin().await?;
         let Some(c_row) = sqlx::query("SELECT user_id, gold FROM characters WHERE id=? FOR UPDATE")
@@ -528,18 +554,33 @@ async fn dh_start_battle(state: &GameState, pool: &MySqlPool, args: &[Json]) -> 
     }
 
     let _ = get_or_create_event_row(pool, id, "dragon_hunt", 0).await?;
-    let code = generate_code(10);
-    let hash = auth::sha256_hex(&format!("{boss_id}{code}{id}"));
-    let rewards_cfg = cfg
-        .get("rewards")
-        .and_then(|r| r.get(&boss_id).or(Some(r)))
+    let ranges = cfg["capture_range"]
+        .get(mode.to_string())
+        .and_then(Json::as_array);
+    let n1 = ranges
+        .and_then(|a| a.first())
+        .and_then(Json::as_i64)
+        .unwrap_or(0);
+    let n2 = ranges
+        .and_then(|a| a.get(1))
+        .and_then(Json::as_i64)
+        .unwrap_or([5, 15, 25][mode as usize]);
+    let code = generate_code(16);
+    let hash = auth::sha256_hex(&format!("{boss_id}{code}{id}{n1}{n2}"));
+    let rewards_cfg = cfg["rewards_per_boss"]
+        .get(&boss_id)
         .cloned()
-        .unwrap_or_else(|| json!({}));
-
+        .unwrap_or_else(|| {
+            cfg.get("rewards_default")
+                .cloned()
+                .unwrap_or_else(|| json!([]))
+        });
     state.event_battles.lock().await.insert(
         (id, "dragon_hunt".into()),
         EventBattle {
             code: code.clone(),
+            boss_id: boss_id.clone(),
+            started: std::time::Instant::now(),
             rewards_cfg,
         },
     );
@@ -548,35 +589,49 @@ async fn dh_start_battle(state: &GameState, pool: &MySqlPool, args: &[Json]) -> 
         "error": 0,
         "code": code,
         "hash": hash,
+        "n1":n1,"n2":n2,
     }))
 }
 
 async fn dh_finish_battle(state: &GameState, pool: &MySqlPool, args: &[Json]) -> Result {
     let id = integer(args, 0);
     let code = string(args, 2);
-    let win_flag = integer(args, 5);
-    let key = string(args, 7);
+    let win_flag = i64::from(integer(args, 8) >= 0);
+    let key = string(args, 5);
     if let Some(error) = guard(pool, id, &key, true).await? {
         return Ok(error);
     }
-    let battle = state
-        .event_battles
-        .lock()
-        .await
-        .remove(&(id, "dragon_hunt".into()));
-    let Some(battle) = battle else {
-        return Ok(json!({"status": 2, "result": "Invalid or expired battle session."}));
+    let mut battles = state.event_battles.lock().await;
+    let map_key = (id, "dragon_hunt".into());
+    let Some(battle) = battles.get(&map_key) else {
+        return Ok(json!({"status":2,"result":"Invalid or expired battle session."}));
     };
-    if battle.code != code {
-        return Ok(json!({"status": 2, "result": "Invalid or expired battle session."}));
+    if battle.code != code
+        || battle.boss_id != string(args, 1)
+        || battle.started.elapsed().as_secs() >= 1800
+    {
+        return Ok(json!({"status":2,"result":"Invalid or expired battle session."}));
+    }
+    let expected = format!(
+        "{id}{}{}{}{}{}{}",
+        string(args, 1),
+        code,
+        string(args, 4),
+        string(args, 6),
+        string(args, 7),
+        string(args, 8)
+    );
+    if !auth::valid_legacy_hash(&string(args, 3), &expected) {
+        return Ok(json!({"status":2,"result":"Security check failed."}));
     }
     let row = get_or_create_event_row(pool, id, "dragon_hunt", 0).await?;
     let (xp_awarded, gold_awarded, items_awarded, level, xp, level_up) =
         award_event_battle(pool, id, row.id, win_flag, &battle.rewards_cfg).await?;
+    battles.remove(&map_key);
     Ok(json!({
         "status": 1,
         "error": 0,
-        "result": [xp_awarded, gold_awarded, items_awarded],
+        "result": [xp_awarded,gold_awarded,items_awarded],
         "level": level,
         "xp": xp,
         "level_up": level_up,
@@ -997,6 +1052,48 @@ async fn menu_get_battle_data(
     }))
 }
 
+fn find_boss<'a>(value: &'a Json, id: &str) -> Option<&'a Json> {
+    if value.as_str() == Some(id) {
+        return Some(value);
+    }
+    if let Some(obj) = value.as_object() {
+        if obj.get("id").is_some_and(|ids| contains_boss_id(ids, id)) {
+            return Some(value);
+        }
+        return obj.values().find_map(|v| find_boss(v, id));
+    }
+    value.as_array()?.iter().find_map(|v| find_boss(v, id))
+}
+fn contains_boss_id(value: &Json, id: &str) -> bool {
+    if value.as_str() == Some(id) {
+        return true;
+    }
+    if let Some(a) = value.as_array() {
+        return a.iter().any(|v| contains_boss_id(v, id));
+    }
+    value
+        .as_object()
+        .is_some_and(|m| m.values().any(|v| contains_boss_id(v, id)))
+}
+fn boss_amount(value: &Json, level: i64) -> i64 {
+    if let Some(n) = value.as_i64() {
+        return n.max(0);
+    }
+    let Some(formula) = value.as_str() else {
+        return 0;
+    };
+    // Only the reference catalog's restricted arithmetic form; never evaluate code.
+    let pieces: Vec<_> = formula.split_whitespace().collect();
+    if let ["level", "*", factor, "/", divisor] = pieces.as_slice()
+        && let (Ok(factor), Ok(divisor)) = (factor.parse::<i64>(), divisor.parse::<i64>())
+        && (0..=1_000_000).contains(&factor)
+        && divisor > 0
+    {
+        return level.saturating_mul(factor) / divisor;
+    }
+    0
+}
+
 async fn menu_start_battle(
     state: &GameState,
     pool: &MySqlPool,
@@ -1007,8 +1104,8 @@ async fn menu_start_battle(
     default_bosses: &[&str],
 ) -> Result {
     let id = integer(args, 0);
-    let boss_index = integer(args, 1) as usize;
-    let key = string(args, 3);
+    let boss_id = string(args, 1);
+    let key = string(args, 5);
     if let Some(error) = guard(pool, id, &key, true).await? {
         return Ok(error);
     }
@@ -1024,44 +1121,31 @@ async fn menu_start_battle(
         return Ok(json!({"status": 2, "result": "Not enough energy."}));
     }
 
-    let bosses_cfg = cfg.get("bosses").and_then(Json::as_array);
-    let boss_id = if let Some(arr) = bosses_cfg {
-        let Some(entry) = arr.get(boss_index) else {
-            return Ok(json!({"status": 2, "result": "Invalid boss index."}));
-        };
-        if let Some(s) = entry.as_str() {
-            s.to_string()
-        } else if let Some(arr_ids) = entry.get("id").and_then(Json::as_array) {
-            arr_ids
-                .first()
-                .and_then(Json::as_str)
-                .unwrap_or("ene_01")
-                .to_string()
-        } else {
-            entry
-                .get("id")
-                .and_then(Json::as_str)
-                .unwrap_or("ene_01")
-                .to_string()
-        }
-    } else if let Some(&b) = default_bosses.get(boss_index) {
-        b.to_string()
-    } else {
-        return Ok(json!({"status": 2, "result": "Invalid boss index."}));
-    };
-
-    sqlx::query("UPDATE character_event_data SET energy = energy - 1, updated_at=NOW() WHERE id=?")
-        .bind(row.id)
-        .execute(pool)
-        .await?;
+    if !auth::valid_legacy_hash(
+        &string(args, 4),
+        &format!("{id}{boss_id}{}{}", string(args, 3), string(args, 2)),
+    ) {
+        return Ok(json!({"status":2,"result":"Security check failed."}));
+    }
+    let boss = find_boss(&cfg["bosses"], &boss_id);
+    if boss.is_none() && !default_bosses.contains(&boss_id.as_str()) {
+        return Ok(json!({"status":2,"result":"Unknown event boss."}));
+    }
+    if sqlx::query("UPDATE character_event_data SET energy = energy - 1, updated_at=NOW() WHERE id=? AND energy>0")
+        .bind(row.id).execute(pool).await?.rows_affected()!=1 {return Ok(json!({"status":2,"result":"Not enough energy."}));}
 
     let code = generate_code(10);
     let hash = auth::sha256_hex(&format!("{boss_id}{code}{id}"));
-    let rewards_cfg = cfg.get("rewards").cloned().unwrap_or_else(|| json!({}));
+    let rewards_cfg = boss
+        .filter(|v| v.is_object())
+        .cloned()
+        .unwrap_or_else(|| cfg.get("rewards").cloned().unwrap_or_else(|| json!({})));
     state.event_battles.lock().await.insert(
         (id, event_key.into()),
         EventBattle {
             code: code.clone(),
+            boss_id: boss_id.clone(),
+            started: std::time::Instant::now(),
             rewards_cfg,
         },
     );
@@ -1083,28 +1167,39 @@ async fn menu_finish_battle(
     let id = integer(args, 0);
     let code = string(args, 2);
     let win_flag = integer(args, 5);
-    let key = string(args, 7);
+    let key = string(args, 6);
     if let Some(error) = guard(pool, id, &key, true).await? {
         return Ok(error);
     }
-    let battle = state
-        .event_battles
-        .lock()
-        .await
-        .remove(&(id, event_key.into()));
-    let Some(battle) = battle else {
-        return Ok(json!({"status": 2, "result": "Invalid or expired battle session."}));
+    let mut battles = state.event_battles.lock().await;
+    let map_key = (id, event_key.into());
+    let Some(battle) = battles.get(&map_key) else {
+        return Ok(json!({"status":2,"result":"Invalid or expired battle session."}));
     };
-    if battle.code != code {
-        return Ok(json!({"status": 2, "result": "Invalid or expired battle session."}));
+    if battle.code != code
+        || battle.boss_id != string(args, 1)
+        || battle.started.elapsed().as_secs() >= 1800
+    {
+        return Ok(json!({"status":2,"result":"Invalid or expired battle session."}));
+    }
+    let expected = format!(
+        "{id}{}{}{}{}",
+        string(args, 1),
+        code,
+        string(args, 3),
+        string(args, 5)
+    );
+    if !auth::valid_legacy_hash(&string(args, 4), &expected) {
+        return Ok(json!({"status":2,"result":"Security check failed."}));
     }
     let row = get_or_create_event_row(pool, id, event_key, default_energy_max).await?;
     let (xp_awarded, gold_awarded, items_awarded, level, xp, level_up) =
         award_event_battle(pool, id, row.id, win_flag, &battle.rewards_cfg).await?;
+    battles.remove(&map_key);
     Ok(json!({
         "status": 1,
         "error": 0,
-        "result": [xp_awarded, gold_awarded, items_awarded],
+        "result": [xp_awarded,gold_awarded,items_awarded],
         "level": level,
         "xp": xp,
         "level_up": level_up,
@@ -1209,11 +1304,14 @@ async fn menu_get_bonus_rewards(
             .unwrap_or_else(|| raw_arr.iter().any(|v| v.as_u64() == Some(i as u64)));
         claimed.push(is_claimed);
     }
+    let data:Vec<Json>=(0..count).map(|i|json!({"id":cfg[milestones_key][i]["id"],"req":cfg[milestones_key][i]["requirement"],"claimed":claimed[i]})).collect();
     Ok(json!({
         "status": 1,
         "error": 0,
         "Error": 0,
         "milestone": row.battles,
+        "total_spins": row.battles,
+        "data":data,
         "rewards": claimed,
     }))
 }
@@ -1281,7 +1379,36 @@ async fn menu_claim_bonus_reward(
         .bind(id)
         .fetch_one(&mut *tx)
         .await?;
-    rewards::grant(&mut tx, id, raw_id).await?;
+    let latest: Json = sqlx::query_scalar(
+        "SELECT milestones_claimed FROM character_event_data WHERE id=? FOR UPDATE",
+    )
+    .bind(row.id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if latest.as_array().is_some_and(|a| {
+        a.get(reward_idx).and_then(Json::as_bool) == Some(true)
+            || a.iter().any(|v| v.as_u64() == Some(reward_idx as u64))
+    }) {
+        return Ok(json!({"status":2,"result":"Milestone already claimed."}));
+    }
+    if let Some(latest) = latest.as_array() {
+        for (index, flag) in claimed.iter_mut().enumerate() {
+            *flag = latest
+                .get(index)
+                .and_then(Json::as_bool)
+                .unwrap_or_else(|| latest.iter().any(|v| v.as_u64() == Some(index as u64)));
+        }
+    }
+    let quantity = m_entry["quantity"].as_i64().unwrap_or(1);
+    if !(1..=1000000).contains(&quantity) {
+        return Ok(json!({"status":2,"result":"Invalid milestone quantity."}));
+    }
+    let reward = if quantity == 1 {
+        raw_id.to_owned()
+    } else {
+        format!("{raw_id}:{quantity}")
+    };
+    rewards::grant(&mut tx, id, &reward).await?;
     if let Some(slot) = claimed.get_mut(reward_idx) {
         *slot = true;
     }
@@ -1297,7 +1424,7 @@ async fn menu_claim_bonus_reward(
     Ok(json!({
         "status": 1,
         "error": 0,
-        "reward": [resolve_gender_placeholder(raw_id, gender)],
+        "reward": [resolve_gender_placeholder(&reward, gender)],
     }))
 }
 
@@ -1333,6 +1460,7 @@ pub async fn dispatch_halloween_2025(
         "claimBonusRewards" => {
             menu_claim_bonus_reward(pool, args, PANEL, KEY, 8, "milestones").await
         }
+        "buySkill" => menu_buy_skill(pool, args, PANEL, KEY).await,
         _ => Ok(session_error("Invalid HalloweenEvent2025 method")),
     }
 }
@@ -1358,40 +1486,45 @@ pub async fn dispatch_confronting_death_2025(
         "claimBonusRewards" => {
             menu_claim_bonus_reward(pool, args, PANEL, KEY, 8, "milestones").await
         }
-        "buySkill" => cd_buy_skill(pool, args).await,
+        "buySkill" => menu_buy_skill(pool, args, PANEL, KEY).await,
         _ => Ok(session_error("Invalid ConfrontingDeathEvent2025 method")),
     }
 }
 
-async fn cd_buy_skill(pool: &MySqlPool, args: &[Json]) -> Result {
+async fn menu_buy_skill(pool: &MySqlPool, args: &[Json], panel: &str, event_key: &str) -> Result {
     let id = integer(args, 0);
     let key = string(args, 1);
     let pkg_idx = integer(args, 2) as usize;
     if let Some(error) = guard(pool, id, &key, true).await? {
         return Ok(error);
     }
-    let Some(cfg) = active_event_config(pool, "ConfrontingDeathMenu").await? else {
+    let Some(cfg) = active_event_config(pool, panel).await? else {
         return Ok(
             json!({"status": 2, "result": "Confronting Death event is not currently active."}),
         );
     };
     let packages = cfg
         .get("skill_packages")
+        .or_else(|| cfg.get("training"))
         .and_then(Json::as_array)
         .cloned()
         .unwrap_or_default();
     let Some(pkg) = packages.get(pkg_idx) else {
         return Ok(json!({"status": 2, "result": "Invalid package index."}));
     };
-    let skill_id = pkg.get("skill_id").and_then(Json::as_str).unwrap_or("");
+    let skill_id = pkg
+        .get("skill_id")
+        .or_else(|| pkg.get("id"))
+        .and_then(Json::as_str)
+        .unwrap_or("");
     let cost_gold = pkg.get("cost_gold").and_then(Json::as_i64).unwrap_or(0);
-    let cost_tokens = pkg.get("cost_tokens").and_then(Json::as_i64).unwrap_or(0);
+
     if skill_id.is_empty() {
         return Ok(json!({"status": 2, "result": "Skill package configuration error."}));
     }
 
     let mut tx = pool.begin().await?;
-    let Some(c_row) = sqlx::query("SELECT user_id, gold FROM characters WHERE id=? FOR UPDATE")
+    let Some(c_row) = sqlx::query("SELECT c.user_id,c.gold,u.account_type FROM characters c JOIN users u ON u.id=c.user_id WHERE c.id=? FOR UPDATE")
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?
@@ -1399,6 +1532,15 @@ async fn cd_buy_skill(pool: &MySqlPool, args: &[Json]) -> Result {
         return Ok(session_error("Character not found"));
     };
     let user_id: u64 = c_row.get("user_id");
+    let premium = usize::from(c_row.try_get::<i8, _>("account_type")? > 0);
+    let cost_tokens = pkg["cost_tokens"]
+        .as_i64()
+        .or_else(|| pkg["price"].get(premium).and_then(Json::as_i64))
+        .unwrap_or(0);
+    if cost_tokens < 0 || cost_gold < 0 {
+        return Ok(json!({"status":2,"result":"Invalid skill price."}));
+    }
+
     let gold = i64::from(c_row.get::<i32, _>("gold"));
 
     let owned: i64 = sqlx::query_scalar(
@@ -1448,7 +1590,7 @@ async fn cd_buy_skill(pool: &MySqlPool, args: &[Json]) -> Result {
     .await?;
     tx.commit().await?;
 
-    let row = get_or_create_event_row(pool, id, "confronting_death_2025", 8).await?;
+    let row = get_or_create_event_row(pool, id, event_key, 8).await?;
     sqlx::query("UPDATE character_event_data SET bought=1, updated_at=NOW() WHERE id=?")
         .bind(row.id)
         .execute(pool)
@@ -2053,8 +2195,8 @@ pub async fn dispatch_christmas_2025(
             menu_claim_bonus_reward(pool, args, PANEL, KEY, 10, "milestones").await
         }
         "getMinigameData" => xmas25_get_minigame_data(pool, args).await,
-        "startMinigame" => xmas25_start_minigame(pool, args).await,
-        "finishMinigame" => xmas25_finish_minigame(pool, args).await,
+        "startMinigame" => xmas25_start_minigame(state, pool, args).await,
+        "finishMinigame" => xmas25_finish_minigame(state, pool, args).await,
         "refillMinigameEnergy" => xmas25_refill_minigame(pool, args).await,
         "getGachaData" => xmas25_get_gacha_data(pool, args).await,
         "getGachaRewards" => xmas25_get_gacha_rewards(state, pool, args).await,
@@ -2108,88 +2250,83 @@ async fn xmas25_get_minigame_data(pool: &MySqlPool, args: &[Json]) -> Result {
     }))
 }
 
-async fn xmas25_start_minigame(pool: &MySqlPool, args: &[Json]) -> Result {
+async fn xmas25_start_minigame(state: &GameState, pool: &MySqlPool, args: &[Json]) -> Result {
     let id = integer(args, 0);
-    let key = string(args, 1);
-    if let Some(error) = guard(pool, id, &key, true).await? {
-        return Ok(error);
+    if let Some(e) = guard(pool, id, &string(args, 1), true).await? {
+        return Ok(e);
     }
     let Some(cfg) = active_event_config(pool, "ChristmasMenu").await? else {
-        return Ok(json!({"status": 2, "result": "Christmas event is not currently active."}));
+        return Ok(json!({"status":2,"result":"Christmas event is not active."}));
     };
-    let energy_max = cfg
-        .get("minigame")
-        .and_then(|m| m.get("energy_max"))
-        .and_then(Json::as_i64)
-        .unwrap_or(8);
+    let energy_max = cfg["minigame"]["energy_max"].as_i64().unwrap_or(8);
     let row = get_or_create_event_row(pool, id, "christmas_2025_mini", energy_max).await?;
-    if row.energy <= 0 {
-        return Ok(json!({"status": 2, "result": "Not enough minigame energy."}));
+    let code = authentication::mission_token()
+        .map_err(|_| sqlx::Error::Protocol("Entropy unavailable".into()))?;
+    let mut sessions = state.event_battles.lock().await;
+    if sqlx::query(
+        "UPDATE character_event_data SET energy=energy-1,updated_at=NOW() WHERE id=? AND energy>0",
+    )
+    .bind(row.id)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        != 1
+    {
+        return Ok(json!({"status":2,"result":"Not enough minigame energy."}));
     }
-    let new_energy = row.energy - 1;
-    sqlx::query("UPDATE character_event_data SET energy=?, updated_at=NOW() WHERE id=?")
-        .bind(new_energy)
-        .bind(row.id)
-        .execute(pool)
-        .await?;
-    Ok(json!({
-        "status": 1,
-        "error": 0,
-        "energy": new_energy,
-    }))
+    let rewards = cfg["minigame"]
+        .as_array()
+        .cloned()
+        .or_else(|| cfg["minigame"]["rewards"].as_array().cloned())
+        .unwrap_or_default();
+    sessions.insert(
+        (id, "christmas_2025_mini".into()),
+        EventBattle {
+            code: code.clone(),
+            boss_id: "minigame".into(),
+            started: std::time::Instant::now(),
+            rewards_cfg: json!(rewards),
+        },
+    );
+    Ok(json!({"status":1,"code":code,"energy":row.energy-1}))
 }
-
-async fn xmas25_finish_minigame(pool: &MySqlPool, args: &[Json]) -> Result {
+async fn xmas25_finish_minigame(state: &GameState, pool: &MySqlPool, args: &[Json]) -> Result {
     let id = integer(args, 0);
     let key = string(args, 1);
-    if let Some(error) = guard(pool, id, &key, true).await? {
-        return Ok(error);
+    if let Some(e) = guard(pool, id, &key, true).await? {
+        return Ok(e);
     }
-    let Some(cfg) = active_event_config(pool, "ChristmasMenu").await? else {
-        return Ok(json!({"status": 2, "result": "Christmas event is not currently active."}));
+    let score = integer(args, 2);
+    if !(0..=100000).contains(&score) {
+        return Ok(json!({"status":2,"result":"Invalid score."}));
+    }
+    let mut sessions = state.event_battles.lock().await;
+    let map_key = (id, "christmas_2025_mini".into());
+    let Some(session) = sessions.get(&map_key) else {
+        return Ok(json!({"status":2,"result":"Start a minigame first."}));
     };
-    let mini_rewards = cfg
-        .get("minigame")
-        .and_then(|m| m.get("rewards"))
-        .and_then(Json::as_array)
-        .cloned()
-        .unwrap_or_default();
-
+    if session.started.elapsed().as_secs() > 3600
+        || string(args, 3) != auth::sha256_hex(&format!("{id}|{key}|{score}|{}", session.code))
+    {
+        return Ok(json!({"status":2,"result":"Invalid minigame session."}));
+    }
     let mut tx = pool.begin().await?;
     let gender: i8 = sqlx::query_scalar("SELECT gender FROM characters WHERE id=? FOR UPDATE")
         .bind(id)
         .fetch_one(&mut *tx)
         .await?;
-    let mut granted = Vec::new();
-    for entry in &mini_rewards {
-        let (raw_id, chance) = if let Some(s) = entry.as_str() {
-            (s, 100i64)
-        } else {
-            (
-                entry.get("id").and_then(Json::as_str).unwrap_or(""),
-                entry.get("chance").and_then(Json::as_i64).unwrap_or(100),
-            )
-        };
-        if !raw_id.is_empty() && ((rand_u64() % 100) as i64) < chance {
-            rewards::grant(&mut tx, id, raw_id).await?;
-            granted.push(resolve_gender_placeholder(raw_id, gender));
+    let mut granted = vec![];
+    for entry in session.rewards_cfg.as_array().into_iter().flatten() {
+        if let Some(reward) = entry.as_str() {
+            rewards::grant(&mut tx, id, reward).await?;
+            granted.push(resolve_gender_placeholder(reward, gender));
         }
     }
+    sqlx::query("UPDATE character_event_data SET battles=battles+1,updated_at=NOW() WHERE character_id=? AND event_key='christmas_2025_mini'").bind(id).execute(&mut *tx).await?;
+    let energy:i64=sqlx::query_scalar("SELECT CAST(energy AS SIGNED) FROM character_event_data WHERE character_id=? AND event_key='christmas_2025_mini'").bind(id).fetch_one(&mut *tx).await?;
     tx.commit().await?;
-
-    let row = get_or_create_event_row(pool, id, "christmas_2025_mini", 8).await?;
-    sqlx::query(
-        "UPDATE character_event_data SET battles = battles + 1, updated_at=NOW() WHERE id=?",
-    )
-    .bind(row.id)
-    .execute(pool)
-    .await?;
-
-    Ok(json!({
-        "status": 1,
-        "error": 0,
-        "rewards": granted,
-    }))
+    sessions.remove(&map_key);
+    Ok(json!({"status":1,"rewards":granted,"current_energy":energy}))
 }
 
 async fn xmas25_refill_minigame(pool: &MySqlPool, args: &[Json]) -> Result {
@@ -2259,13 +2396,20 @@ async fn xmas25_get_gacha_data(pool: &MySqlPool, args: &[Json]) -> Result {
     if active_event_config(pool, "ChristmasMenu").await?.is_none() {
         return Ok(json!({"status": 2, "result": "Christmas event is not currently active."}));
     }
-    Ok(json!({"status": 1, "error": 0}))
+    let coin:i64=sqlx::query_scalar("SELECT COALESCE(CAST(SUM(quantity) AS SIGNED),0) FROM character_items WHERE character_id=? AND item_id='material_2231'").bind(id).fetch_one(pool).await?;
+    Ok(json!({"status":1,"error":0,"coin":coin}))
 }
 
 async fn xmas25_get_gacha_rewards(state: &GameState, pool: &MySqlPool, args: &[Json]) -> Result {
     let (id, key) = extract_id_key(args);
     let play_type = string(args, 2);
-    let play_qty = integer(args, 3).clamp(1, 10);
+    let play_qty = integer(args, 3);
+    if !matches!(play_qty, 1 | 3 | 6)
+        || !matches!(play_type.as_str(), "coins" | "tokens")
+        || (play_type == "coins" && play_qty == 6)
+    {
+        return Ok(json!({"status":2,"result":"Invalid draw selection."}));
+    }
     if let Some(error) = guard(pool, id, &key, true).await? {
         return Ok(error);
     }
@@ -2277,19 +2421,30 @@ async fn xmas25_get_gacha_rewards(state: &GameState, pool: &MySqlPool, args: &[J
         .get("coin_id")
         .and_then(Json::as_str)
         .unwrap_or("material_2231");
-    let tier_idx = if play_qty >= 10 {
-        2
-    } else if play_qty >= 2 {
-        1
-    } else {
-        0
+    let tier_idx = match play_qty {
+        1 => 0,
+        3 => 1,
+        _ => 2,
     };
-    let pool_items = gacha
-        .get("pool")
-        .and_then(Json::as_array)
-        .cloned()
-        .unwrap_or_else(|| vec![json!({"id": "gold_10000", "weight": 100})]);
-
+    let mut pool_items = gacha["pool"].as_array().cloned().unwrap_or_default();
+    if pool_items.is_empty() {
+        let weights = [5, 25, 70];
+        for (tier, weight) in ["top", "mid", "common"].iter().zip(weights) {
+            if let Some(items) = gacha[*tier].as_array() {
+                for id in items.iter().filter_map(Json::as_str) {
+                    if id.ends_with('_') {
+                        continue;
+                    }
+                    pool_items.push(
+                        json!({"id":id,"weight":(weight*10000/(items.len().max(1) as i64)).max(1)}),
+                    );
+                }
+            }
+        }
+    }
+    if pool_items.is_empty() {
+        return Ok(json!({"status":2,"result":"Gacha rewards are not configured."}));
+    }
     let mut tx = pool.begin().await?;
     let Some(c_row) =
         sqlx::query("SELECT user_id, name, level, gender FROM characters WHERE id=? FOR UPDATE")
@@ -2309,7 +2464,7 @@ async fn xmas25_get_gacha_rewards(state: &GameState, pool: &MySqlPool, args: &[J
             .get("coin_costs")
             .and_then(Json::as_array)
             .cloned()
-            .unwrap_or_else(|| vec![json!(1), json!(2), json!(10)]);
+            .unwrap_or_else(|| vec![json!(1), json!(3), json!(6)]);
         let needed = coin_costs
             .get(tier_idx)
             .and_then(Json::as_i64)
@@ -2348,7 +2503,7 @@ async fn xmas25_get_gacha_rewards(state: &GameState, pool: &MySqlPool, args: &[J
             .get("token_costs")
             .and_then(Json::as_array)
             .cloned()
-            .unwrap_or_else(|| vec![json!(50), json!(100), json!(500)]);
+            .unwrap_or_else(|| vec![json!(20), json!(50), json!(100)]);
         let needed = token_costs
             .get(tier_idx)
             .and_then(Json::as_i64)
@@ -2426,9 +2581,11 @@ async fn xmas25_get_gacha_rewards(state: &GameState, pool: &MySqlPool, args: &[J
     }
     g_hist.truncate(100);
 
+    let coin:i64=sqlx::query_scalar("SELECT COALESCE(CAST(SUM(quantity) AS SIGNED),0) FROM character_items WHERE character_id=? AND item_id=?").bind(id).bind(coin_id).fetch_one(pool).await?;
     Ok(json!({
         "status": 1,
         "error": 0,
+        "coin":coin,
         "rewards": granted,
     }))
 }

@@ -12,6 +12,7 @@ mod academy;
 mod account;
 mod admin;
 mod animations;
+mod billing;
 mod characters;
 mod clan_http;
 mod consumables;
@@ -22,6 +23,7 @@ mod economy;
 mod events;
 mod exams;
 mod friends;
+mod gear_presets;
 mod hunting;
 mod inventory;
 mod mail;
@@ -30,12 +32,14 @@ mod missions;
 mod pet_actions;
 mod pets;
 mod recruits;
+mod resets;
 mod rewards;
 mod seasonal;
 mod senjutsu;
 mod shadow_war;
 mod skillsets;
 mod talents;
+mod wisdom;
 use persistence::MySqlPool;
 
 type SharedMap<K, V> = std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<K, V>>>;
@@ -187,8 +191,13 @@ fn dispatch(target: &str, amf3: bool) -> Value {
 
 #[cfg(test)]
 mod tests {
+    mod client_panels;
     mod extension;
+    mod free_products;
+    mod pet_villa_repair;
     mod player_actions;
+    mod skills_repair;
+    mod social_repair;
     use super::*;
     use axum::{
         body::{Body as HttpBody, to_bytes},
@@ -249,6 +258,18 @@ mod tests {
                 .unwrap();
             sqlx::raw_sql(include_str!(
                 "../../../database/migrations/001_pet_skills.sql"
+            ))
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+            sqlx::raw_sql(include_str!(
+                "../../../database/migrations/002_gear_presets.sql"
+            ))
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+            sqlx::raw_sql(include_str!(
+                "../../../database/migrations/003_free_products.sql"
             ))
             .execute(&mut *connection)
             .await
@@ -658,9 +679,9 @@ mod tests {
                 json!([id, key])
             )
             .await["status"],
-            2
+            1
         );
-        sqlx::query("UPDATE users SET account_type=1 WHERE id=?")
+        sqlx::query("UPDATE users SET account_type=1,tokens=GREATEST(tokens,200) WHERE id=?")
             .bind(uid)
             .execute(&pool)
             .await
@@ -697,6 +718,8 @@ mod tests {
                 .any(|s| s == skill_id)
         );
         extension::progression_and_companions(&final_app, &pool, id, key).await;
+        social_repair::run(&final_app, &pool, id, key).await;
+        free_products::run(&final_app, &pool, id, key).await;
         sqlx::query("DELETE FROM users WHERE id=?")
             .bind(uid)
             .execute(&pool)

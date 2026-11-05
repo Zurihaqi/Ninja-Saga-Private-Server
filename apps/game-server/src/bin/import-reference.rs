@@ -19,6 +19,8 @@ async fn main() -> shared::ServerResult {
     let imported=async {
         sqlx::raw_sql(include_str!("../../../../database/schema/mysql.sql")).execute(&mut *connection).await?;
         sqlx::raw_sql(include_str!("../../../../database/migrations/001_pet_skills.sql")).execute(&mut *connection).await?;
+        sqlx::raw_sql(include_str!("../../../../database/migrations/002_gear_presets.sql")).execute(&mut *connection).await?;
+        sqlx::raw_sql(include_str!("../../../../database/migrations/003_free_products.sql")).execute(&mut *connection).await?;
         let mut count=0;
         for table in ["items","skills","pets","missions","npcs","enemies","talents","senjutsus","game_configs","x_p_s"] {
             let rows=catalogs[table].as_array().ok_or_else(||sqlx::Error::Protocol(format!("Missing catalog {table}")))?;

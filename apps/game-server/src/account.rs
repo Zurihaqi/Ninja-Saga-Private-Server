@@ -125,6 +125,11 @@ pub async fn dispatch(state: &GameState, target: &str, args: &[Json]) -> Json {
         return json!({"status":500,"error":"Database is not configured"});
     };
     let result = match target.as_str() {
+        "Billing.claimProduct" => crate::billing::claim(pool, args).await,
+        "Analytics.libraries" => Ok(json!({"status":1})),
+        target if target.starts_with("ScrollOfWisdom.") => {
+            crate::wisdom::dispatch(pool, target.split_once('.').unwrap().1, args).await
+        }
         "SystemLogin.registerUser" => register(pool, args).await,
         "SystemLogin.loginUser" => login(pool, args).await,
         "SystemLogin.getAllCharacters" => characters::list(pool, args).await,
@@ -173,6 +178,12 @@ pub async fn dispatch(state: &GameState, target: &str, args: &[Json]) -> Json {
         "Character.useBattleItem" => crate::consumables::use_item(pool, args, true).await,
         "Blacksmith.forgeItem" => crate::crafting::forge(pool, args).await,
         "Character.resetTalents" => crate::talents::dispatch(pool, "resetTalents", args).await,
+        "Character.resetElements" | "Character.resetSenjutsu" => {
+            crate::resets::dispatch(pool, target.split_once('.').unwrap().1, args).await
+        }
+        "Character.buySenjutsuEssential" => {
+            crate::economy::buy_essential(pool, args, "essential_11", "essential").await
+        }
         target if target.starts_with("Senjutsu.") => {
             crate::senjutsu::dispatch(pool, target.strip_prefix("Senjutsu.").unwrap(), args).await
         }
@@ -180,6 +191,12 @@ pub async fn dispatch(state: &GameState, target: &str, args: &[Json]) -> Json {
             crate::talents::dispatch(pool, target.strip_prefix("Talent.").unwrap(), args).await
         }
         "Character.getSkillSets" => crate::skillsets::list(pool, args).await,
+        "Character.getGearPresets"
+        | "Character.unlockGearPresetSlot"
+        | "Character.updateGearPreset"
+        | "Character.renameGearPreset" => {
+            crate::gear_presets::dispatch(pool, target.split_once('.').unwrap().1, args).await
+        }
         "Character.createSkillSet" => crate::skillsets::create(pool, args).await,
         "Character.saveSkillSet" => crate::skillsets::save(pool, args).await,
         "BattleSystem.startMission" => crate::missions::start(state, pool, args).await,
@@ -457,6 +474,7 @@ pub async fn dispatch(state: &GameState, target: &str, args: &[Json]) -> Json {
         }
     };
     result.unwrap_or_else(|error| {
+        tracing::error!(method=target,error=%error,"AMF action failed");
         #[cfg(test)]
         eprintln!("{target}: {error}");
         #[cfg(not(test))]

@@ -32,6 +32,242 @@ const CASTLE_NAMES: [&str; 7] = [
     "Hikone Castle",
 ];
 
+fn signed_battle_request(char_id: i64, params: &HashMap<String, String>, phase_one: bool) -> bool {
+    let value = |key: &str| params.get(key).map(String::as_str).unwrap_or("");
+    let nonce = value("b");
+    let timestamp = value("t").parse::<i64>().unwrap_or(0);
+    let seconds = if timestamp > 10_000_000_000 {
+        timestamp / 1000
+    } else {
+        timestamp
+    };
+    if !(8..=64).contains(&nonce.len()) || (now_ts() - seconds).abs() > 300 {
+        return false;
+    }
+    let payload = if phase_one {
+        format!(
+            "{char_id}|{nonce}|{}|{}|{}",
+            value("t"),
+            value("c"),
+            value("e")
+        )
+    } else {
+        format!("{char_id}|{nonce}|{}|{}", value("t"), value("c"))
+    };
+    value("h").len() == 32 && auth::valid_legacy_hash(value("h"), &payload)
+}
+
+async fn start_phase_one(
+    pool: &MySqlPool,
+    char_id: i64,
+    params: &HashMap<String, String>,
+) -> std::result::Result<Json, sqlx::Error> {
+    if !signed_battle_request(char_id, params, true) {
+        return Ok(json!({"errorMessage":"Invalid battle request","code":422}));
+    }
+    let requested = params
+        .get("c")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+    let enemy = params.get("e").map(String::as_str).unwrap_or("");
+    let enemy_exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM enemies WHERE enemy_id=?")
+        .bind(enemy)
+        .fetch_one(pool)
+        .await?;
+    if enemy_exists == 0 {
+        return Ok(json!({"errorMessage":"Enemy not found","code":422}));
+    }
+    if let Some(config) = crate::economy::catalog_entry("gamedata", "crew") {
+        let allowed = config["data"]["boss"].as_array().is_some_and(|a| {
+            a.iter().any(|boss| {
+                boss["id"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|v| v == enemy))
+            })
+        });
+        if !allowed {
+            return Ok(json!({"errorMessage":"Invalid crew boss","code":422}));
+        }
+    }
+    let (season_id, _, phase) = ensure_crew_season(pool).await?;
+    if phase != 1 {
+        return Ok(json!({"errorMessage":"The crew season is no longer in phase one","code":409}));
+    }
+    ensure_castles_exist(pool, season_id).await?;
+    let mut tx = pool.begin().await?;
+    let Some(member) =
+        sqlx::query("SELECT crew_id,stamina FROM crew_members WHERE character_id=? FOR UPDATE")
+            .bind(char_id)
+            .fetch_optional(&mut *tx)
+            .await?
+    else {
+        return Ok(json!({"errorMessage":"Not in a crew","code":400}));
+    };
+    let crew_id: u64 = member.get("crew_id");
+    let nonce = params.get("b").map(String::as_str).unwrap_or("");
+    if let Some(saved)=sqlx::query_scalar::<_,Json>("SELECT battle_data FROM crew_battles WHERE season_id=? AND JSON_UNQUOTE(JSON_EXTRACT(battle_data,'$.character_id'))=? AND JSON_UNQUOTE(JSON_EXTRACT(battle_data,'$.request_nonce'))=? AND JSON_EXTRACT(battle_data,'$.phase')=1 ORDER BY id DESC LIMIT 1").bind(season_id).bind(char_id.to_string()).bind(nonce).fetch_optional(&mut *tx).await? {return Ok(saved["start"].clone());}
+    if member.get::<i32, _>("stamina") < 10 {
+        return Ok(json!({"errorMessage":"Not enough stamina","code":402}));
+    }
+    let castle = if (1..=7).contains(&requested) {
+        sqlx::query("SELECT id,owner_crew_id FROM crew_castles WHERE season_id=? AND castle_index=? FOR UPDATE").bind(season_id).bind(requested-1).fetch_optional(&mut *tx).await?
+    } else {
+        sqlx::query(
+            "SELECT id,owner_crew_id FROM crew_castles WHERE season_id=? AND id=? FOR UPDATE",
+        )
+        .bind(season_id)
+        .bind(requested)
+        .fetch_optional(&mut *tx)
+        .await?
+    };
+    let Some(castle) = castle else {
+        return Ok(json!({"errorMessage":"Castle not found","code":404}));
+    };
+    let castle_id: u64 = castle.get("id");
+    let recruits: Vec<Json> = params
+        .get("f")
+        .and_then(|s| serde_json::from_str::<Json>(s).ok())
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+    if recruits.len() > 2 {
+        return Ok(json!({"errorMessage":"Maximum two recruits","code":422}));
+    }
+    let mut friends = vec![];
+    for recruit in recruits {
+        let target = recruit
+            .as_u64()
+            .or_else(|| {
+                recruit
+                    .as_str()
+                    .and_then(|s| s.trim_start_matches("char_").parse().ok())
+            })
+            .unwrap_or(0);
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM crew_members WHERE crew_id=? AND character_id=?",
+        )
+        .bind(crew_id)
+        .bind(target)
+        .fetch_one(&mut *tx)
+        .await?;
+        if exists == 0 || target == char_id as u64 || friends.contains(&target) {
+            return Ok(json!({"errorMessage":"Invalid crew recruit","code":422}));
+        }
+        friends.push(target);
+    }
+    let code =
+        auth::random_hex().map_err(|_| sqlx::Error::Protocol("Entropy unavailable".into()))?;
+    let start = json!({"b":code,"c":requested,"t":now_ts(),"f":friends});
+    let data = json!({"phase":1,"character_id":char_id,"request_nonce":nonce,"start":start,"completed":false,"enemy":enemy});
+    sqlx::query("UPDATE crew_members SET stamina=stamina-10,updated_at=NOW() WHERE character_id=?")
+        .bind(char_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO crew_battles(season_id,castle_id,attacker_crew_id,defender_crew_id,attacker_won,battle_data,created_at,updated_at) VALUES(?,?,?,?,0,?,NOW(),NOW())").bind(season_id).bind(castle_id).bind(crew_id).bind(castle.get::<Option<u64>,_>("owner_crew_id")).bind(data).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(start)
+}
+
+async fn finish_phase_one(
+    pool: &MySqlPool,
+    char_id: i64,
+    params: &HashMap<String, String>,
+) -> std::result::Result<Json, sqlx::Error> {
+    let value = |key: &str| params.get(key).map(String::as_str).unwrap_or("");
+    let code = value("b");
+    let stats = value("s");
+    if code.len() != 32 || stats.len() > 64000 {
+        return Ok(json!({"errorMessage":"Invalid battle result","code":422}));
+    }
+    let payload = format!("{char_id}|{code}|{}|{}|{stats}", value("t"), value("c"));
+    if value("h").len() != 32 || !auth::valid_legacy_hash(value("h"), &payload) {
+        return Ok(json!({"errorMessage":"Invalid battle result","code":422}));
+    }
+    let mut tx = pool.begin().await?;
+    let Some(member) =
+        sqlx::query("SELECT crew_id,stamina FROM crew_members WHERE character_id=? FOR UPDATE")
+            .bind(char_id)
+            .fetch_optional(&mut *tx)
+            .await?
+    else {
+        return Ok(json!({"errorMessage":"Not in a crew","code":400}));
+    };
+    let crew_id: u64 = member.get("crew_id");
+    let Some(battle)=sqlx::query("SELECT id,castle_id,battle_data,UNIX_TIMESTAMP(created_at) AS created_ts FROM crew_battles WHERE attacker_crew_id=? AND JSON_UNQUOTE(JSON_EXTRACT(battle_data,'$.character_id'))=? AND JSON_UNQUOTE(JSON_EXTRACT(battle_data,'$.start.b'))=? AND JSON_EXTRACT(battle_data,'$.phase')=1 ORDER BY id DESC LIMIT 1 FOR UPDATE").bind(crew_id).bind(char_id.to_string()).bind(code).fetch_optional(&mut *tx).await? else{return Ok(json!({"errorMessage":"Battle session not found","code":404}));};
+    let mut data: Json = battle.get("battle_data");
+    if data["start"]["t"].as_i64() != value("t").parse::<i64>().ok()
+        || data["start"]["c"].as_u64() != value("c").parse::<u64>().ok()
+    {
+        return Ok(json!({"errorMessage":"Battle session mismatch","code":422}));
+    }
+    if data["completed"] == true {
+        return Ok(data["result"].clone());
+    }
+    if now_ts() - battle.get::<Option<i64>, _>("created_ts").unwrap_or(0) > 1800 {
+        return Ok(json!({"errorMessage":"Battle session expired","code":410}));
+    }
+    let castle_id = battle.get::<Option<u64>, _>("castle_id").unwrap_or(0);
+    let Some(castle) =
+        sqlx::query("SELECT owner_crew_id,wall_hp FROM crew_castles WHERE id=? FOR UPDATE")
+            .bind(castle_id)
+            .fetch_optional(&mut *tx)
+            .await?
+    else {
+        return Ok(json!({"errorMessage":"Castle not found","code":404}));
+    };
+    let owner: Option<u64> = castle.get("owner_crew_id");
+    let damage = if owner == Some(crew_id) {
+        0
+    } else {
+        rand_range(5, 20)
+    };
+    let wall = i64::from(castle.get::<u32, _>("wall_hp"));
+    let captured = owner != Some(crew_id) && wall <= damage;
+    let merit = if captured {
+        rand_range(50, 150)
+    } else {
+        rand_range(10, 50)
+    };
+    if captured {
+        sqlx::query("UPDATE crew_castles SET owner_crew_id=?,wall_hp=100,defender_hp=100,updated_at=NOW() WHERE id=?").bind(crew_id).bind(castle_id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE crews SET prestige=prestige+10,updated_at=NOW() WHERE id=?")
+            .bind(crew_id)
+            .execute(&mut *tx)
+            .await?;
+    } else if damage > 0 {
+        sqlx::query("UPDATE crew_castles SET wall_hp=?,updated_at=NOW() WHERE id=?")
+            .bind((wall - damage).max(0))
+            .bind(castle_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    let result = json!({"success":true,"data":{"m":merit,"d":damage},"stamina":member.get::<i32,_>("stamina"),"captured":captured});
+    data["completed"] = json!(true);
+    data["merit"] = json!(merit);
+    data["damage"] = json!(damage);
+    data["result"] = result.clone();
+    sqlx::query("UPDATE crew_battles SET attacker_won=1,battle_data=?,updated_at=NOW() WHERE id=?")
+        .bind(data)
+        .bind(battle.get::<u64, _>("id"))
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(result)
+}
+
+async fn phase_two_result(
+    pool: &MySqlPool,
+    char_id: i64,
+    params: &HashMap<String, String>,
+) -> std::result::Result<Json, sqlx::Error> {
+    let Some(nonce) = params.get("b") else {
+        return Ok(json!({"errorMessage":"Battle nonce required","code":422}));
+    };
+    let saved:Option<Json>=sqlx::query_scalar("SELECT battle_data FROM crew_battles WHERE JSON_UNQUOTE(JSON_EXTRACT(battle_data,'$.character_id'))=? AND JSON_UNQUOTE(JSON_EXTRACT(battle_data,'$.request_nonce'))=? AND JSON_EXTRACT(battle_data,'$.phase')=2 ORDER BY id DESC LIMIT 1").bind(char_id.to_string()).bind(nonce).fetch_optional(pool).await?;
+    Ok(saved
+        .map(|v| v["result"].clone())
+        .unwrap_or_else(|| json!({"errorMessage":"Battle result not found","code":404})))
+}
+
 pub fn router() -> Router<GameState> {
     Router::new()
         .route("/crew/season", post(crew_dispatch_root))
@@ -295,6 +531,13 @@ async fn format_crew_full(
     })))
 }
 
+async fn crew_character(pool: &MySqlPool, char_id: i64) -> std::result::Result<Json, sqlx::Error> {
+    let Some(r)=sqlx::query("SELECT m.*,c.name,c.level,UNIX_TIMESTAMP(m.prestige_boost_expires_at) AS boost_ts FROM crew_members m JOIN characters c ON c.id=m.character_id WHERE m.character_id=?").bind(char_id).fetch_optional(pool).await? else {return Ok(Json::Null);};
+    Ok(
+        json!({"char_id":char_id,"name":r.get::<String,_>("name"),"level":r.get::<i32,_>("level"),"role":r.get::<u8,_>("battle_role"),"member_role":r.get::<String,_>("role"),"battle_role":r.get::<u8,_>("battle_role"),"role_limit_at":r.get::<String,_>("role_limit_at"),"stamina":r.get::<i32,_>("stamina"),"max_stamina":r.get::<i32,_>("max_stamina"),"prestige":0,"prestige_boost":(r.try_get::<Option<i64>,_>("boost_ts")?.unwrap_or(0)-now_ts()).max(0)}),
+    )
+}
+
 async fn format_crew_members(
     pool: &MySqlPool,
     crew_id: u64,
@@ -302,7 +545,7 @@ async fn format_crew_members(
 ) -> std::result::Result<Vec<Json>, sqlx::Error> {
     let rows = if let Some(br) = battle_role_filter {
         sqlx::query(
-            "SELECT cm.*, UNIX_TIMESTAMP(cm.prestige_boost_expires_at) AS boost_ts, c.name, c.level \
+            "SELECT cm.*, UNIX_TIMESTAMP(cm.prestige_boost_expires_at) AS boost_ts, c.name, c.level, (SELECT CAST(COALESCE(SUM(CAST(JSON_UNQUOTE(JSON_EXTRACT(cb.battle_data,'$.damage')) AS SIGNED)),0) AS SIGNED) FROM crew_battles cb WHERE cb.attacker_crew_id=cm.crew_id AND JSON_UNQUOTE(JSON_EXTRACT(cb.battle_data,'$.character_id'))=CAST(cm.character_id AS CHAR)) AS damage_total, (SELECT COUNT(*) FROM crew_battles cb WHERE cb.attacker_crew_id=cm.crew_id AND cb.attacker_won=1 AND JSON_UNQUOTE(JSON_EXTRACT(cb.battle_data,'$.character_id'))=CAST(cm.character_id AS CHAR)) AS boss_kills \
              FROM crew_members cm LEFT JOIN characters c ON c.id = cm.character_id \
              WHERE cm.crew_id=? AND cm.battle_role=?",
         )
@@ -312,7 +555,7 @@ async fn format_crew_members(
         .await?
     } else {
         sqlx::query(
-            "SELECT cm.*, UNIX_TIMESTAMP(cm.prestige_boost_expires_at) AS boost_ts, c.name, c.level \
+            "SELECT cm.*, UNIX_TIMESTAMP(cm.prestige_boost_expires_at) AS boost_ts, c.name, c.level, (SELECT CAST(COALESCE(SUM(CAST(JSON_UNQUOTE(JSON_EXTRACT(cb.battle_data,'$.damage')) AS SIGNED)),0) AS SIGNED) FROM crew_battles cb WHERE cb.attacker_crew_id=cm.crew_id AND JSON_UNQUOTE(JSON_EXTRACT(cb.battle_data,'$.character_id'))=CAST(cm.character_id AS CHAR)) AS damage_total, (SELECT COUNT(*) FROM crew_battles cb WHERE cb.attacker_crew_id=cm.crew_id AND cb.attacker_won=1 AND JSON_UNQUOTE(JSON_EXTRACT(cb.battle_data,'$.character_id'))=CAST(cm.character_id AS CHAR)) AS boss_kills \
              FROM crew_members cm LEFT JOIN characters c ON c.id = cm.character_id \
              WHERE cm.crew_id=?",
         )
@@ -339,6 +582,9 @@ async fn format_crew_members(
                 "battle_role": r.get::<u8, _>("battle_role"),
                 "role_limit_at": r.get::<String, _>("role_limit_at"),
                 "donated_golds": r.get::<i32, _>("donated_golds"),
+                "gold_donated":r.get::<i32,_>("donated_golds"),
+                "token_donated":r.get::<i32,_>("donated_tokens"),
+                "damage":r.get::<i64,_>("damage_total"),"boss_kill":r.get::<i64,_>("boss_kills"),
                 "donated_tokens": r.get::<i32, _>("donated_tokens"),
                 "prestige_boost": (boost_ts - now).max(0),
             })
@@ -466,6 +712,25 @@ async fn dispatch_crew_route(
                 }
             }))
         }
+        ["player", "crew", "members"] => {
+            let crew_id: Option<u64> =
+                sqlx::query_scalar("SELECT crew_id FROM crew_members WHERE character_id=?")
+                    .bind(char_id)
+                    .fetch_optional(pool)
+                    .await?;
+            let members = if let Some(id) = crew_id {
+                format_crew_members(pool, id, None).await?
+            } else {
+                vec![]
+            };
+            Ok(json!({"members":members}))
+        }
+        ["player", "stamina"] => {
+            let (sid, num, phase) = ensure_crew_season(pool).await?;
+            Ok(
+                json!({"char":crew_character(pool,char_id).await?,"season":{"id":sid,"number":num,"phase":phase,"timestamp":86400}}),
+            )
+        }
         ["player", "crew"] => {
             let member = sqlx::query("SELECT crew_id FROM crew_members WHERE character_id=?")
                 .bind(char_id)
@@ -473,13 +738,14 @@ async fn dispatch_crew_route(
                 .await?;
             let Some(m) = member else {
                 let crews = format_crew_summaries(pool, "", None, 50).await?;
-                return Ok(json!({ "crew": null, "crews": crews }));
+                return Ok(json!({ "code":404,"crew": null, "crews": crews }));
             };
             let crew_id: u64 = m.get("crew_id");
             let crew = format_crew_full(pool, crew_id).await?;
             let members = format_crew_members(pool, crew_id, None).await?;
             Ok(json!({
                 "crew": crew,
+                "char":crew_character(pool,char_id).await?,
                 "members": members,
                 "date": "",
             }))
@@ -551,11 +817,11 @@ async fn dispatch_crew_route(
             };
             Ok(json!({ "crews": crews }))
         }
-        ["request", "all"] => {
+        ["request", "available"] => {
             let crews = format_crew_summaries(pool, "", None, 50).await?;
             Ok(json!({ "crews": crews }))
         }
-        ["request", "send", crew_id_str] => {
+        ["request", "send", crew_id_str] | ["player", "request", crew_id_str] => {
             let target_crew_id = crew_id_str.parse::<u64>().unwrap_or(0);
             let in_crew: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM crew_members WHERE character_id=?")
@@ -583,18 +849,18 @@ async fn dispatch_crew_route(
             .await?;
             Ok(json!({ "result": "Request to join crew sent!" }))
         }
-        ["request", "available"] => {
+        ["request", "all"] => {
             let Some(m) =
                 sqlx::query("SELECT crew_id, role FROM crew_members WHERE character_id=?")
                     .bind(char_id)
                     .fetch_optional(pool)
                     .await?
             else {
-                return Ok(json!({ "members": [] }));
+                return Ok(json!({ "requests": [] }));
             };
             let role: String = m.get("role");
             if role != "master" && role != "elder" {
-                return Ok(json!({ "members": [] }));
+                return Ok(json!({ "requests": [] }));
             }
             let crew_id: u64 = m.get("crew_id");
             let rows = sqlx::query(
@@ -616,9 +882,11 @@ async fn dispatch_crew_route(
                     })
                 })
                 .collect();
-            Ok(json!({ "members": members }))
+            Ok(json!({ "total":members.len(),"requests": members }))
         }
-        ["request", "reject", req_char_str] => {
+        ["request", "reject", req_char_str] | ["request", req_char_str, "reject"]
+            if *req_char_str != "all" =>
+        {
             let req_char_id = req_char_str.parse::<u64>().unwrap_or(0);
             let Some(m) =
                 sqlx::query("SELECT crew_id, role FROM crew_members WHERE character_id=?")
@@ -626,36 +894,35 @@ async fn dispatch_crew_route(
                     .fetch_optional(pool)
                     .await?
             else {
-                return Ok(json!({ "error": "Unauthorized" }));
+                return Ok(json!({ "errorMessage": "Unauthorized" }));
             };
             let role: String = m.get("role");
             if role != "master" && role != "elder" {
-                return Ok(json!({ "error": "Unauthorized" }));
+                return Ok(json!({ "errorMessage": "Unauthorized" }));
             }
             let crew_id: u64 = m.get("crew_id");
             sqlx::query(
                 "UPDATE crew_requests SET status='rejected', updated_at=NOW() \
-                 WHERE crew_id=? AND (character_id=? OR id=?) AND status='pending'",
+                 WHERE crew_id=? AND character_id=? AND status='pending'",
             )
             .bind(crew_id)
-            .bind(req_char_id)
             .bind(req_char_id)
             .execute(pool)
             .await?;
             Ok(json!({ "success": true }))
         }
-        ["request", "reject-all"] => {
+        ["request", "reject-all"] | ["request", "all", "reject"] => {
             let Some(m) =
                 sqlx::query("SELECT crew_id, role FROM crew_members WHERE character_id=?")
                     .bind(char_id)
                     .fetch_optional(pool)
                     .await?
             else {
-                return Ok(json!({ "error": "Unauthorized" }));
+                return Ok(json!({ "errorMessage": "Unauthorized" }));
             };
             let role: String = m.get("role");
             if role != "master" && role != "elder" {
-                return Ok(json!({ "error": "Unauthorized" }));
+                return Ok(json!({ "errorMessage": "Unauthorized" }));
             }
             sqlx::query(
                 "UPDATE crew_requests SET status='rejected', updated_at=NOW() WHERE crew_id=? AND status='pending'",
@@ -665,7 +932,7 @@ async fn dispatch_crew_route(
             .await?;
             Ok(json!({ "success": true }))
         }
-        ["request", "accept", req_char_str] => {
+        ["request", "accept", req_char_str] | ["request", req_char_str, "accept"] => {
             let req_char_id = req_char_str.parse::<u64>().unwrap_or(0);
             let Some(m) =
                 sqlx::query("SELECT crew_id, role FROM crew_members WHERE character_id=?")
@@ -673,23 +940,22 @@ async fn dispatch_crew_route(
                     .fetch_optional(pool)
                     .await?
             else {
-                return Ok(json!({ "error": "Unauthorized" }));
+                return Ok(json!({ "errorMessage": "Unauthorized" }));
             };
             let role: String = m.get("role");
             if role != "master" && role != "elder" {
-                return Ok(json!({ "error": "Unauthorized" }));
+                return Ok(json!({ "errorMessage": "Unauthorized" }));
             }
             let crew_id: u64 = m.get("crew_id");
             let Some(req_row) = sqlx::query(
-                "SELECT id, character_id FROM crew_requests WHERE crew_id=? AND (character_id=? OR id=?) AND status='pending' LIMIT 1",
+                "SELECT id, character_id FROM crew_requests WHERE crew_id=? AND character_id=? AND status='pending' LIMIT 1",
             )
             .bind(crew_id)
-            .bind(req_char_id)
             .bind(req_char_id)
             .fetch_optional(pool)
             .await?
             else {
-                return Ok(json!({ "error": "Request not found" }));
+                return Ok(json!({ "errorMessage": "Request not found" }));
             };
             let req_id: u64 = req_row.get("id");
             let target_char_id: u64 = req_row.get("character_id");
@@ -703,7 +969,7 @@ async fn dispatch_crew_route(
                     .fetch_one(pool)
                     .await?;
             if cur_cnt >= i64::from(max_members) {
-                return Ok(json!({ "error": "Crew is full" }));
+                return Ok(json!({ "errorMessage": "Crew is full" }));
             }
             let mut tx = pool.begin().await?;
             sqlx::query("DELETE FROM crew_members WHERE character_id=?")
@@ -732,7 +998,7 @@ async fn dispatch_crew_route(
             tx.commit().await?;
             Ok(json!({ "success": true }))
         }
-        ["member", "invite", target_str] => {
+        ["member", "invite", target_str] | ["request", target_str, "invite"] => {
             let target_id = target_str.parse::<i64>().unwrap_or(0);
             let Some(actor) =
                 sqlx::query("SELECT crew_id, role FROM crew_members WHERE character_id=?")
@@ -740,11 +1006,11 @@ async fn dispatch_crew_route(
                     .fetch_optional(pool)
                     .await?
             else {
-                return Ok(json!({ "error": "Unauthorized" }));
+                return Ok(json!({ "errorMessage": "Unauthorized" }));
             };
             let role: String = actor.get("role");
             if role != "master" && role != "elder" {
-                return Ok(json!({ "error": "Unauthorized" }));
+                return Ok(json!({ "errorMessage": "Unauthorized" }));
             }
             let in_crew: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM crew_members WHERE character_id=?")
@@ -752,7 +1018,7 @@ async fn dispatch_crew_route(
                     .fetch_one(pool)
                     .await?;
             if in_crew > 0 {
-                return Ok(json!({ "error": "Player is already in a crew" }));
+                return Ok(json!({ "errorMessage": "Player is already in a crew" }));
             }
             let crew_id: u64 = actor.get("crew_id");
             let c_row = sqlx::query("SELECT name, max_members FROM crews WHERE id=?")
@@ -765,7 +1031,7 @@ async fn dispatch_crew_route(
                     .fetch_one(pool)
                     .await?;
             if cur_cnt >= i64::from(c_row.get::<i32, _>("max_members")) {
-                return Ok(json!({ "error": "Crew is full" }));
+                return Ok(json!({ "errorMessage": "Crew is full" }));
             }
             let c_name: String = c_row.get("name");
             sqlx::query(
@@ -786,10 +1052,12 @@ async fn dispatch_crew_route(
                 .fetch_optional(pool)
                 .await?
             else {
-                return Ok(json!({ "error": "Not in a crew" }));
+                return Ok(json!({ "errorMessage": "Not in a crew" }));
             };
             if m.get::<String, _>("role") == "master" {
-                return Ok(json!({ "error": "Master cannot quit. Transfer leadership first." }));
+                return Ok(
+                    json!({ "errorMessage": "Master cannot quit. Transfer leadership first." }),
+                );
             }
             sqlx::query("DELETE FROM crew_members WHERE character_id=?")
                 .bind(char_id)
@@ -805,11 +1073,11 @@ async fn dispatch_crew_route(
                     .fetch_optional(pool)
                     .await?
             else {
-                return Ok(json!({ "error": "Unauthorized" }));
+                return Ok(json!({ "errorMessage": "Unauthorized" }));
             };
             let a_role: String = actor.get("role");
             if a_role != "master" && a_role != "elder" {
-                return Ok(json!({ "error": "Unauthorized" }));
+                return Ok(json!({ "errorMessage": "Unauthorized" }));
             }
             let crew_id: u64 = actor.get("crew_id");
             let Some(target) =
@@ -819,11 +1087,11 @@ async fn dispatch_crew_route(
                     .fetch_optional(pool)
                     .await?
             else {
-                return Ok(json!({ "error": "Member not found" }));
+                return Ok(json!({ "errorMessage": "Member not found" }));
             };
             let t_role: String = target.get("role");
             if t_role == "master" || (a_role == "elder" && t_role == "elder") {
-                return Ok(json!({ "error": "Cannot kick this member" }));
+                return Ok(json!({ "errorMessage": "Cannot kick this member" }));
             }
             sqlx::query("DELETE FROM crew_members WHERE crew_id=? AND character_id=?")
                 .bind(crew_id)
@@ -840,10 +1108,10 @@ async fn dispatch_crew_route(
                     .fetch_optional(pool)
                     .await?
             else {
-                return Ok(json!({ "error": "Only master can promote" }));
+                return Ok(json!({ "errorMessage": "Only master can promote" }));
             };
             if actor.get::<String, _>("role") != "master" {
-                return Ok(json!({ "error": "Only master can promote" }));
+                return Ok(json!({ "errorMessage": "Only master can promote" }));
             }
             let crew_id: u64 = actor.get("crew_id");
             let Some(target) =
@@ -853,7 +1121,7 @@ async fn dispatch_crew_route(
                     .fetch_optional(pool)
                     .await?
             else {
-                return Ok(json!({ "error": "Member not found" }));
+                return Ok(json!({ "errorMessage": "Member not found" }));
             };
             let new_role = if target.get::<String, _>("role") == "elder" {
                 "member"
@@ -878,10 +1146,10 @@ async fn dispatch_crew_route(
                     .fetch_optional(pool)
                     .await?
             else {
-                return Ok(json!({ "error": "Only master can transfer leadership" }));
+                return Ok(json!({ "errorMessage": "Only master can transfer leadership" }));
             };
             if actor.get::<String, _>("role") != "master" {
-                return Ok(json!({ "error": "Only master can transfer leadership" }));
+                return Ok(json!({ "errorMessage": "Only master can transfer leadership" }));
             }
             let crew_id: u64 = actor.get("crew_id");
             let exists: i64 = sqlx::query_scalar(
@@ -892,7 +1160,7 @@ async fn dispatch_crew_route(
             .fetch_one(pool)
             .await?;
             if exists == 0 {
-                return Ok(json!({ "error": "Member not found" }));
+                return Ok(json!({ "errorMessage": "Member not found" }));
             }
             let mut tx = pool.begin().await?;
             sqlx::query(
@@ -920,7 +1188,7 @@ async fn dispatch_crew_route(
         ["player", "donate", amount_str, "golds"] => {
             let amount = amount_str.parse::<i64>().unwrap_or(0);
             if amount <= 0 {
-                return Ok(json!({ "error": "Invalid amount" }));
+                return Ok(json!({ "errorMessage": "Invalid amount" }));
             }
             let mut tx = pool.begin().await?;
             let Some(m) =
@@ -929,7 +1197,7 @@ async fn dispatch_crew_route(
                     .fetch_optional(&mut *tx)
                     .await?
             else {
-                return Ok(json!({ "error": "Not in a crew" }));
+                return Ok(json!({ "errorMessage": "Not in a crew" }));
             };
             let crew_id: u64 = m.get("crew_id");
             let gold = i64::from(
@@ -939,7 +1207,7 @@ async fn dispatch_crew_route(
                     .await?,
             );
             if gold < amount {
-                return Ok(json!({ "error": "Not enough gold" }));
+                return Ok(json!({ "errorMessage": "Not enough gold" }));
             }
             let new_gold = gold - amount;
             sqlx::query("UPDATE characters SET gold=?, updated_at=NOW() WHERE id=?")
@@ -965,7 +1233,7 @@ async fn dispatch_crew_route(
         ["player", "donate", amount_str, "tokens"] => {
             let amount = amount_str.parse::<i64>().unwrap_or(0);
             if amount <= 0 {
-                return Ok(json!({ "error": "Invalid amount" }));
+                return Ok(json!({ "errorMessage": "Invalid amount" }));
             }
             let mut tx = pool.begin().await?;
             let Some(m) =
@@ -974,7 +1242,7 @@ async fn dispatch_crew_route(
                     .fetch_optional(&mut *tx)
                     .await?
             else {
-                return Ok(json!({ "error": "Not in a crew" }));
+                return Ok(json!({ "errorMessage": "Not in a crew" }));
             };
             let crew_id: u64 = m.get("crew_id");
             let tokens = i64::from(
@@ -984,7 +1252,7 @@ async fn dispatch_crew_route(
                     .await?,
             );
             if tokens < amount {
-                return Ok(json!({ "error": "Not enough tokens" }));
+                return Ok(json!({ "errorMessage": "Not enough tokens" }));
             }
             let new_tokens = tokens - amount;
             sqlx::query("UPDATE users SET tokens=?, updated_at=NOW() WHERE id=?")
@@ -1094,10 +1362,10 @@ async fn dispatch_crew_route(
             .fetch_optional(&mut *tx)
             .await?
             else {
-                return Ok(json!({ "error": "Only master can increase member cap" }));
+                return Ok(json!({ "errorMessage": "Only master can increase member cap" }));
             };
             if m.get::<String, _>("role") != "master" {
-                return Ok(json!({ "error": "Only master can increase member cap" }));
+                return Ok(json!({ "errorMessage": "Only master can increase member cap" }));
             }
             let crew_id: u64 = m.get("crew_id");
             let c_row = sqlx::query("SELECT max_members, tokens FROM crews WHERE id=? FOR UPDATE")
@@ -1107,11 +1375,11 @@ async fn dispatch_crew_route(
             let cur_max = i64::from(c_row.get::<i32, _>("max_members"));
             let c_tokens = i64::from(c_row.get::<i32, _>("tokens"));
             if cur_max >= 50 {
-                return Ok(json!({ "error": "Already at max members" }));
+                return Ok(json!({ "errorMessage": "Already at max members" }));
             }
             let cost = cur_max * 500;
             if c_tokens < cost {
-                return Ok(json!({ "error": "Not enough crew tokens" }));
+                return Ok(json!({ "errorMessage": "Not enough crew tokens" }));
             }
             let new_max = (cur_max + 5).min(50);
             sqlx::query("UPDATE crews SET max_members=?, tokens=?, updated_at=NOW() WHERE id=?")
@@ -1130,11 +1398,11 @@ async fn dispatch_crew_route(
                     .fetch_optional(pool)
                     .await?
             else {
-                return Ok(json!({ "error": "Unauthorized" }));
+                return Ok(json!({ "errorMessage": "Unauthorized" }));
             };
             let role: String = m.get("role");
             if role != "master" && role != "elder" {
-                return Ok(json!({ "error": "Unauthorized" }));
+                return Ok(json!({ "errorMessage": "Unauthorized" }));
             }
             let ann = params.get("announcement").cloned().unwrap_or_default();
             sqlx::query("UPDATE crews SET announcement_draft=?, updated_at=NOW() WHERE id=?")
@@ -1151,11 +1419,11 @@ async fn dispatch_crew_route(
                     .fetch_optional(pool)
                     .await?
             else {
-                return Ok(json!({ "error": "Unauthorized" }));
+                return Ok(json!({ "errorMessage": "Unauthorized" }));
             };
             let role: String = m.get("role");
             if role != "master" && role != "elder" {
-                return Ok(json!({ "error": "Unauthorized" }));
+                return Ok(json!({ "errorMessage": "Unauthorized" }));
             }
             sqlx::query(
                 "UPDATE crews SET announcement_published = announcement_draft, updated_at=NOW() WHERE id=?",
@@ -1425,7 +1693,7 @@ async fn dispatch_crew_route(
         ["rename"] => {
             let name = params.get("name").map(|s| s.trim()).unwrap_or("");
             if name.len() < 3 || name.len() > 50 {
-                return Ok(json!({ "error": "Name must be 3-50 characters" }));
+                return Ok(json!({ "errorMessage": "Name must be 3-50 characters" }));
             }
             let Some(m) =
                 sqlx::query("SELECT crew_id, role FROM crew_members WHERE character_id=?")
@@ -1433,10 +1701,10 @@ async fn dispatch_crew_route(
                     .fetch_optional(pool)
                     .await?
             else {
-                return Ok(json!({ "error": "Only master can rename crew" }));
+                return Ok(json!({ "errorMessage": "Only master can rename crew" }));
             };
             if m.get::<String, _>("role") != "master" {
-                return Ok(json!({ "error": "Only master can rename crew" }));
+                return Ok(json!({ "errorMessage": "Only master can rename crew" }));
             }
             let crew_id: u64 = m.get("crew_id");
             let taken: i64 =
@@ -1446,7 +1714,7 @@ async fn dispatch_crew_route(
                     .fetch_one(pool)
                     .await?;
             if taken > 0 {
-                return Ok(json!({ "error": "Crew name already taken" }));
+                return Ok(json!({ "errorMessage": "Crew name already taken" }));
             }
             sqlx::query("UPDATE crews SET name=?, updated_at=NOW() WHERE id=?")
                 .bind(name)
@@ -1488,7 +1756,7 @@ async fn dispatch_crew_route(
                     .await?;
             Ok(json!({ "crews": crews }))
         }
-        ["battle", "opponents", id_str] => {
+        ["battle", "opponents", id_str] | ["request", "available", id_str] => {
             let crews =
                 format_crew_summaries(pool, "WHERE c.id = ?", Some((*id_str).into()), 1).await?;
             Ok(json!({ "crews": crews }))
@@ -1689,35 +1957,22 @@ async fn dispatch_crew_route(
             let members = format_crew_members(pool, crew_id, Some(1)).await?;
             Ok(json!({ "members": members }))
         }
-        ["battle", "phase1", "start"] => {
-            let c_input = params
-                .get("c")
-                .and_then(|s| s.parse::<i64>().ok())
-                .unwrap_or(0);
-            let Some(m) = sqlx::query("SELECT stamina FROM crew_members WHERE character_id=?")
-                .bind(char_id)
-                .fetch_optional(pool)
-                .await?
-            else {
-                return Ok(json!({ "errorMessage": "Not in a crew" }));
-            };
-            if m.get::<i32, _>("stamina") < 10 {
-                return Ok(json!({ "errorMessage": "Not enough stamina", "code": 402 }));
-            }
-            let (sid, _, _) = ensure_crew_season(pool).await?;
-            let _ = ensure_castles_exist(pool, sid).await?;
-            Ok(json!({
-                "c": c_input,
-                "f": [],
-            }))
-        }
-        ["battle", "phase1", "finish"] => Ok(json!({ "success": true })),
+        ["battle", "phase1", "start"] => start_phase_one(pool, char_id, params).await,
+        ["battle", "phase1", "finish"] => finish_phase_one(pool, char_id, params).await,
         ["battle", "phase2", "start"] => {
+            if !signed_battle_request(char_id, params, false) {
+                return Ok(json!({"errorMessage":"Invalid battle request","code":422}));
+            }
             let c_input = params
                 .get("c")
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(0);
-            let (sid, _, _) = ensure_crew_season(pool).await?;
+            let (sid, _, phase) = ensure_crew_season(pool).await?;
+            if phase != 2 {
+                return Ok(
+                    json!({"errorMessage":"The crew season is not in phase two","code":409}),
+                );
+            }
             let _ = ensure_castles_exist(pool, sid).await?;
             let mut tx = pool.begin().await?;
             let Some(m) = sqlx::query(
@@ -1731,15 +1986,17 @@ async fn dispatch_crew_route(
             };
             let att_crew_id: u64 = m.get("crew_id");
             let stamina = m.get::<i32, _>("stamina");
+            let nonce = params.get("b").map(String::as_str).unwrap_or("");
+            if let Some(saved)=sqlx::query_scalar::<_,Json>("SELECT battle_data FROM crew_battles WHERE season_id=? AND JSON_UNQUOTE(JSON_EXTRACT(battle_data,'$.character_id'))=? AND JSON_UNQUOTE(JSON_EXTRACT(battle_data,'$.request_nonce'))=? AND JSON_EXTRACT(battle_data,'$.phase')=2 ORDER BY id DESC LIMIT 1").bind(sid).bind(char_id.to_string()).bind(nonce).fetch_optional(&mut *tx).await? {return Ok(saved["result"].clone());}
+
             if stamina < 10 {
                 return Ok(json!({ "errorMessage": "Not enough stamina", "code": 402 }));
             }
             let castle_row = sqlx::query(
-                "SELECT id, owner_crew_id, wall_hp FROM crew_castles WHERE id=? OR (season_id=? AND castle_index=?) LIMIT 1 FOR UPDATE",
+                "SELECT id, owner_crew_id, wall_hp FROM crew_castles WHERE id=? AND season_id=? LIMIT 1 FOR UPDATE",
             )
             .bind(c_input)
             .bind(sid)
-            .bind(c_input)
             .fetch_optional(&mut *tx)
             .await?;
             let Some(c_row) = castle_row else {
@@ -1811,29 +2068,14 @@ async fn dispatch_crew_route(
                     .execute(&mut *tx)
                     .await?;
             }
-            sqlx::query(
-                "INSERT INTO crew_battles (season_id, castle_id, attacker_crew_id, defender_crew_id, attacker_won, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, NOW(), NOW())",
-            )
-            .bind(sid)
-            .bind(castle_id)
-            .bind(att_crew_id)
-            .bind(owner_crew_id)
-            .bind(if won { 1 } else { 0 })
-            .execute(&mut *tx)
-            .await?;
+            let result = json!({"b":true,"w":if won {&att_name}else{&def_name},"l":if won {&def_name}else{&att_name},"d":damage,"m":merit,"s":new_stamina});
+            let data = json!({"phase":2,"character_id":char_id,"request_nonce":nonce,"completed":true,"merit":merit,"damage":damage,"result":result});
+            sqlx::query("INSERT INTO crew_battles(season_id,castle_id,attacker_crew_id,defender_crew_id,attacker_won,battle_data,created_at,updated_at) VALUES(?,?,?,?,?,?,NOW(),NOW())").bind(sid).bind(castle_id).bind(att_crew_id).bind(owner_crew_id).bind(won).bind(data).execute(&mut *tx).await?;
             tx.commit().await?;
 
-            Ok(json!({
-                "b": true,
-                "w": if won { &att_name } else { &def_name },
-                "l": if won { &def_name } else { &att_name },
-                "d": damage,
-                "m": merit,
-                "s": new_stamina,
-            }))
+            Ok(result)
         }
-        ["battle", "phase2", "finish"] => Ok(json!({ "success": true })),
+        ["battle", "phase2", "finish"] => phase_two_result(pool, char_id, params).await,
         ["player", "minigame"] => {
             let energy: i32 =
                 sqlx::query_scalar("SELECT minigame_energy FROM crew_members WHERE character_id=?")

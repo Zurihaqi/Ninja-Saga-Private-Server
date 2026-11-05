@@ -53,7 +53,8 @@ pub async fn dispatch(pool: &MySqlPool, method: &str, args: &[Json]) -> Result {
         char.try_get("talent_1")?,
         char.try_get("talent_2")?,
         char.try_get("talent_3")?,
-    ];
+    ]
+    .map(|slot: Option<String>| slot.filter(|v| !v.is_empty() && v != "0"));
     let result = match method {
         "discoverTalent" => {
             let mode = string(args, 2);
@@ -80,6 +81,11 @@ pub async fn dispatch(pool: &MySqlPool, method: &str, args: &[Json]) -> Result {
             } else if selected[1].is_none() {
                 2
             } else if selected[2].is_none() {
+                if char.try_get::<i32, _>("rank")? < 6 {
+                    return Ok(denied(
+                        "Reach Special Jounin to discover a second Secret talent.",
+                    ));
+                }
                 3
             } else {
                 return Ok(denied("All Secret slots full!"));
@@ -152,7 +158,7 @@ pub async fn dispatch(pool: &MySqlPool, method: &str, args: &[Json]) -> Result {
             if current >= 10 {
                 return Ok(denied("Already at maximum level!"));
             }
-            let max = args.get(3).is_some_and(|v| v == true || v == 1);
+            let max = integer(args, 3) == 1 || args.get(3) == Some(&Json::Bool(true));
             let tp = char.try_get::<i32, _>("tp")?;
             let mut spent = 0;
             let mut level = current;
