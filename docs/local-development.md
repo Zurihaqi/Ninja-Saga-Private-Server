@@ -59,6 +59,8 @@ python scripts/patch-client-panels.py
 python scripts/patch-client-panels.py --check
 ```
 
+Optional event banners are served locally, and image loading cannot block startup indefinitely.
+
 The helper compiles a temporary candidate, re-exports the bytecode to verify all repair markers, and replaces only the ignored local movie after verification. Restart AIR or reload the browser afterward. No game-window recording is needed.
 
 For an existing database, apply `migrate` before startup. Provision missing event configuration explicitly with `cargo run -p game-server --bin seed-events --locked`; this preserves existing event records and leaves unsupported event panels inactive.

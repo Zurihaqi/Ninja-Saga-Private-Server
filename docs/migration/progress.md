@@ -30,11 +30,13 @@ The expanded regression changes global event/configuration fixtures. Both local 
 
 ## Validation of this integration
 
-The development workspace passes 35 regular Rust tests, strict Clippy, formatting, minimal-fixture and original-catalog MySQL regressions, and the React/Ruffle build. Live startup checks verify the game/browser host, authenticated admin overview and chat/PvP liveness. Realtime router tests now compose shared health routes exactly as process startup does, catching duplicate-route panics. Generated Ruffle assets and local secrets are excluded from Git. Hosted checks for the refreshed PR and Docker execution are separate acceptance steps.
+The development workspace passes 36 regular Rust tests, strict Clippy, formatting, minimal-fixture and original-catalog MySQL regressions, and the React/Ruffle build. Live startup checks verify the game/browser host, authenticated admin overview and chat/PvP liveness. Realtime router tests now compose shared health routes exactly as process startup does, catching duplicate-route panics. Generated Ruffle assets and local secrets are excluded from Git. Hosted checks for the refreshed PR and Docker execution are separate acceptance steps.
 
 ## November 5 client repair checkpoint
 
-The combined local SWF is compiled from guarded repairs and re-exported to verify all 11 patched classes. Skill inventory exposes all owned skills; missing artwork no longer traps selection or equipped slots. Presets now match the client: first free, then 200 premium/600 free-account tokens, maximum four. Seven upstream skill movies remain missing, so their actual animation/content is not restored.
+Event banner loading now uses same-origin images and a five-second optional-image deadline; task completion is guarded against duplicate callbacks. The user confirmed the repaired browser reaches login/the game.
+
+The combined local SWF is compiled from guarded repairs and re-exported to verify all 12 patched classes. Skill inventory exposes all owned skills; missing artwork no longer traps selection or equipped slots. Presets now match the client: first free, then 200 premium/600 free-account tokens, maximum four. Seven upstream skill movies remain missing, so their actual animation/content is not restored.
 
 Pet Villa stops hidden voice timelines, cancels stale icon requests, clears reused holders and refreshes training timers safely. Backend Villa responses use catalog movie names, authoritative balances and character-level/85 caps. Talent and Sage Upgrade Max accept ActionScript floating-point flags; second Secret discovery requires rank 6.
 
@@ -42,7 +44,7 @@ Event fixes cover the shipped start/finish argument positions, boss IDs, reward 
 
 Real-money products are now free local claims through `Billing.claimProduct`: Recharge token packs, permanent Emblem/Trial Emblem, Ancestor and four package tiers. Claims validate ownership, deduplicate requests, retain admin roles and never deduct gameplay currency. The first free Emblem grants a Wisdom scroll. Merchant redirects and native purchase actions are removed from the prepared local client; obsolete recharge-coupon buttons are hidden. Ordinary gold/token gameplay costs remain.
 
-Both minimal and original-catalog isolated regressions pass, including repaired skill/pet/social flows, both crew battle phases and free-product replay checks. Strict Clippy, frontend build and 35 regular Rust tests pass. Full real-client acceptance and production gates remain open.
+Both minimal and original-catalog isolated regressions pass, including repaired skill/pet/social flows, both crew battle phases and free-product replay checks. Strict Clippy, frontend build and 36 regular Rust tests pass. Full real-client acceptance and production gates remain open.
 
 ## Still required for a fully playable release
 
