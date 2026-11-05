@@ -52,6 +52,8 @@ python scripts/prepare-local-client.py
 
 The client preparation script copies the original into `.tools/client`, redirects service and merchant URLs to loopback, gives the copy its own AIR storage ID, then compiles the skills, Pet Villa and free-product panel repairs. Java and `.tools/ffdec/ffdec.jar` are required for this preparation step. The pinned source remains unchanged. Full assets must be available for the copy. No game assets or upstream credentials are committed to this repository.
 
+Preparation also generates silent Villa preview movies in `.tools/client/pet-previews`. It removes timeline audio and silences embedded sound samples while retaining symbol bindings and duration. Combat continues using the unchanged `pets` movies. `python scripts/patch-client-panels.py --check` verifies preview hashes and compiled client routing. Close and reopen an existing game session after updating to clear sound channels started by the previous client.
+
 ## Update an existing local client
 
 ```powershell

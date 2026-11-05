@@ -56,6 +56,13 @@ def main() -> None:
         verifications.update(getattr(module, "VERIFICATIONS", {}))
     if not patches:
         raise RuntimeError("No panel repair helpers were found")
+    # Static preview movies must be quiet before the client can request them.
+    # --check verifies both the compiled class markers and these asset hashes.
+    preview_spec = importlib.util.spec_from_file_location("prepare_pet_previews", ROOT / "scripts/prepare-pet-previews.py")
+    preview_module = importlib.util.module_from_spec(preview_spec)
+    assert preview_spec.loader is not None
+    preview_spec.loader.exec_module(preview_module)
+    preview_module.prepare(check=args.check)
     work = Path(tempfile.mkdtemp(prefix="client-panels-", dir=local_root))
     exported = work / "exported"
     classes = ",".join(patches)

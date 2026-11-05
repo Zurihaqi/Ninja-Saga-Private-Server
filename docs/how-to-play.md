@@ -46,7 +46,7 @@ Restart AIR or reload the browser to load the repaired local client. The first s
 
 Recharge and Emblem buttons now claim their products for free. Ancestor and the four package tiers are also free; no merchant website or real-money payment is required. Gameplay gold/token purchases still use their displayed currencies.
 
-Pet Villa cancels stale model loads, stops the hidden voice animation and refreshes training timers. Pets cannot train beyond the character level or level 85. A second Secret talent requires Special Jounin (rank 6 or higher).
+Pet Villa cancels stale model loads and refreshes training timers. Its preview movies use silent copies to prevent pet sound effects overlapping or continuing outside the Villa; combat keeps the original pet audio. After updating the client, close and reopen the game once to stop old sound channels. Pets cannot train beyond the character level or level 85. A second Secret talent requires Special Jounin (rank 6 or higher).
 
 ## Troubleshooting
 
