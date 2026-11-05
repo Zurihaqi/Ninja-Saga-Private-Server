@@ -22,7 +22,7 @@ def patch_training(source: str) -> str:
 
 def patch_villa(source: str) -> str:
     if "repairVillaLifecycle" in source:
-        return source
+        return patch_villa_audio(source)
     source = replace_once(source,
         "         this.panel.heyaDarenMC.visible = false;",
         "         this.panel.heyaDarenMC.stopAllMovieClips();\n         this.panel.heyaDarenMC.visible = false;")
@@ -41,12 +41,12 @@ def patch_villa(source: str) -> str:
     source = replace_once(source, "      public function trainPetResponse(param1:Object) : *\n      {", "      public function trainPetResponse(param1:Object) : *\n      {\n         if(param1.status == 1 && param1.hasOwnProperty(\"gold\")) { Character.character_gold = param1.gold; this.main.HUD.setBasicData(); }")
     source = replace_once(source, "         this.main.handleVillageHUDVisibility(true);", "         this.clearAllTrainPetSlot();\n         this.main.handleVillageHUDVisibility(true);")
     source = replace_once(source, "      private function getTrainData(", "      private function repairVillaLifecycle() : void {}\n\n      private function getTrainData(")
-    return source
+    return patch_villa_audio(source)
 
 
 def patch_icon_loader(source: str) -> str:
     if "cancelHolderLoads" in source:
-        return source
+        return patch_preview_audio(source)
     source = replace_once(source,
         '            var _loc5_:* = param2 + "-" + NinjaSage.generateRandomString(4);',
         '            NinjaSage.cancelHolderLoads(param3);\n            var _loc5_:* = param2 + "-" + NinjaSage.generateRandomString(4);')
@@ -82,7 +82,99 @@ def patch_icon_loader(source: str) -> str:
       }
 
 '''
-    return replace_once(source, "      public static function clearLoader() : *", helper + "      public static function clearLoader() : *")
+    source = replace_once(source, "      public static function clearLoader() : *", helper + "      public static function clearLoader() : *")
+    return patch_preview_audio(source)
+
+
+def patch_villa_audio(source: str) -> str:
+    if "silenceVillaGreeting" in source:
+        return source
+    source = replace_once(source,
+        "         this.panel.heyaDarenMC.stopAllMovieClips();",
+        "         this.silenceVillaGreeting();")
+    helper = '''      private function silenceVillaGreeting() : void
+      {
+         NinjaSage.silenceStaticPetPreview(this.panel.heyaDarenMC);
+      }
+
+'''
+    return replace_once(source, "      private function repairVillaLifecycle() : void", helper + "      private function repairVillaLifecycle() : void")
+
+
+def patch_preview_audio(source: str) -> str:
+    """Mute only previews, including audio started before the COMPLETE callback.
+
+    A static body is reparented out of its loaded SWF. It must retain its own
+    mute transform as well as the loading root/holder transforms; stopping a
+    MovieClip alone does not stop already playing event-sound channels.
+    """
+    if "silenceStaticPetPreviewOnInit" in source:
+        return patch_silent_preview_assets(source)
+    source = replace_once(source,
+        '            loader.add(param1 + "/" + param2 + ".swf",{"id":_loc5_});',
+        '''            if(param4 == "PetStaticFullBody") {
+               NinjaSage.silenceStaticPetPreview(param3);
+            }
+            var petPreviewRequest:* = loader.add(param1 + "/" + param2 + ".swf",{"id":_loc5_});
+            if(param4 == "PetStaticFullBody") {
+               petPreviewRequest.addEventListener(Event.INIT,NinjaSage.silenceStaticPetPreviewOnInit,false,int.MAX_VALUE,false);
+            }''')
+    source = replace_once(source,
+        "            GF.removeAllChild(param2);\n            param2.addChild(param1);",
+        '''            if(itemInfo.type == "PetStaticFullBody") {
+               NinjaSage.silenceStaticPetPreview(param1);
+            }
+            GF.removeAllChild(param2);
+            param2.addChild(param1);''')
+    source = replace_once(source,
+        "         if(itemInfo.type != null)",
+        '''         if(itemInfo.type == "PetStaticFullBody") {
+            NinjaSage.silenceStaticPetPreview(item.content);
+         }
+         if(itemInfo.type != null)''')
+    helper = '''      public static function silenceStaticPetPreview(target:*) : void
+      {
+         if(target is flash.display.Sprite) {
+            flash.display.Sprite(target).soundTransform = new flash.media.SoundTransform(0);
+         }
+         if(target is MovieClip) {
+            MovieClip(target).stopAllMovieClips();
+         }
+      }
+
+      private static function silenceStaticPetPreviewOnInit(event:Event) : void
+      {
+         var request:* = event.currentTarget;
+         request.removeEventListener(Event.INIT,NinjaSage.silenceStaticPetPreviewOnInit);
+         if(request.loader && request.loader.content) {
+            NinjaSage.silenceStaticPetPreview(request.loader.content);
+         }
+      }
+
+'''
+    source = replace_once(source, "      public static function cancelHolderLoads(holder:*) : void", helper + "      public static function cancelHolderLoads(holder:*) : void")
+    return patch_silent_preview_assets(source)
+
+
+def patch_silent_preview_assets(source: str) -> str:
+    """Use audio-free derivatives only for static previews, never combat loads."""
+    if "function petPreviewAssetPath" in source:
+        return source
+    source = replace_once(source,
+        'loader.add(param1 + "/" + param2 + ".swf",{"id":_loc5_})',
+        'loader.add(NinjaSage.petPreviewAssetPath(param1,param2,param4),{"id":_loc5_})')
+    helper = '''      private static function petPreviewAssetPath(path:String, name:String, previewType:*) : String
+      {
+         if(path == "pets" && previewType == "PetStaticFullBody") {
+            return "pet-previews/" + name + ".swf";
+         }
+         return path + "/" + name + ".swf";
+      }
+
+'''
+    return replace_once(source,
+        "      public static function silenceStaticPetPreview(target:*) : void",
+        helper + "      public static function silenceStaticPetPreview(target:*) : void")
 
 
 PATCHES = {
@@ -92,6 +184,6 @@ PATCHES = {
 }
 VERIFICATIONS = {
     "Panels.PetTraining": ["repairTimerLifecycle", "this.stopTimer();"],
-    "Panels.PetVilla": ["repairVillaLifecycle", "NinjaSage.cancelHolderLoads", "this.panel.heyaDarenMC.stopAllMovieClips();"],
-    "Managers.NinjaSage": ["function cancelHolderLoads", ".isLoaded", "delete itemMaps[itemInfo.id]"],
+    "Panels.PetVilla": ["repairVillaLifecycle", "NinjaSage.cancelHolderLoads", "silenceVillaGreeting"],
+    "Managers.NinjaSage": ["function cancelHolderLoads", ".isLoaded", "delete itemMaps[itemInfo.id]", "silenceStaticPetPreviewOnInit", "SoundTransform(0)", "function petPreviewAssetPath", '"pet-previews/"'],
 }

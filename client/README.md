@@ -15,3 +15,5 @@ These scripts are required client build inputs. Downloaded AIR movies, Java/FFDe
 For an existing local copy, run `python client/patch-client-panels.py`. The helper compiles a temporary candidate, re-exports bytecode to check all repair markers, backs up the original local movie once, and replaces only verified output. `--check` verifies an installed copy without editing it.
 
 The repairs cover bounded event-banner startup, skill inventory/loading and presets, Pet Villa/timer/model cleanup, and free former paid products. No real-money checkout remains in these product actions. Missing upstream art is not fabricated; seven skill movies remain a content gap.
+
+Villa static previews use generated silent movies under `.tools/client/pet-previews` so pet sound effects cannot overlap or leak into other panels. Combat loads the original pet movies. Preparation generates the previews automatically; `--check` verifies their hashes and compiled routing. Close and reopen the game after updating to clear sounds started by the previous client.

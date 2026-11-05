@@ -6,7 +6,7 @@ Status: **client repair integration and acceptance in progress**. This runtime c
 
 - Skill inventory shows all owned skills, isolates/cancels stale loaders and handles missing artwork without freezing selection/removal. Presets follow client prices: first free, then 200 premium/600 free-account tokens, maximum four.
 
-- Pet Villa stops hidden voice animation, clears reused model holders, cancels stale requests and safely refreshes timers. Backend aliases, balances and level caps match its client contract.
+- Pet Villa clears reused model holders, cancels stale requests and safely refreshes timers. Static pet previews now load 141 generated silent movies to prevent overlapping sound effects escaping the Villa. Binary checks preserve sound bindings/duration and confirm combat assets remain unchanged. User acceptance after a full game restart is pending. Backend aliases, balances and level caps match its client contract.
 
 - Talent/Sage Upgrade Max accepts Flash numeric flags. Second Secret discovery requires Special Jounin rank 6.
 
