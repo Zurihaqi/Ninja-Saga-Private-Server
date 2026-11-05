@@ -87,7 +87,7 @@ pub async fn get(pool: &MySqlPool, args: &[Json]) -> Result {
                 "name": title,
                 "desc": row.get::<Option<String>, _>("description"),
                 "date": row.get::<Option<String>, _>("date"),
-                "img": row.get::<Option<String>, _>("image_url"),
+                "img": local_banner_url(row.get::<Option<String>, _>("image_url").as_deref()),
                 "panel": row.get::<Option<String>, _>("panel"),
             })),
             "permanent" => permanent.push(json!({
@@ -109,12 +109,15 @@ pub async fn get(pool: &MySqlPool, args: &[Json]) -> Result {
             "package" => {
                 // Only the first active package (lowest sort_order/id) is surfaced.
                 if package.is_none() {
-                    let content = row
+                    let mut content = row
                         .try_get::<Option<Json>, _>("data")
                         .ok()
                         .flatten()
                         .and_then(|data| data.get("content").cloned())
                         .unwrap_or(json!([]));
+                    for product in content.as_array_mut().into_iter().flatten() {
+                        product["price"] = json!("Free");
+                    }
                     package = Some(json!({
                         "name": title,
                         "date": row.get::<Option<String>, _>("date"),
@@ -1044,6 +1047,17 @@ async fn pvp_report_bug(pool: &MySqlPool, args: &[Json]) -> Result {
 }
 
 /// The stored `panel` entries are strings; absence keeps PHP's `?? 1` default.
+fn local_banner_url(configured: Option<&str>) -> String {
+    let root = std::env::var("APP_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".into());
+    let root = root.trim_end_matches('/');
+    if let Some(url) = configured.filter(|u| u.starts_with(&format!("{root}/"))) {
+        return url.to_owned();
+    }
+    // The original seasonal CDN can stall indefinitely in a local/offline client.
+    // Reuse an image already shipped with the required AIR asset tree.
+    format!("{root}/AppIconsForPublish/icon-512x512.png")
+}
+
 fn icon(row: &sqlx::mysql::MySqlRow) -> Json {
     row.get::<Option<String>, _>("icon")
         .filter(|v| !v.is_empty())
@@ -1083,6 +1097,14 @@ fn pick(value: &Json, index: usize) -> Option<&Json> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn event_banners_do_not_depend_on_the_external_cdn() {
+        let local =
+            super::local_banner_url(Some("https://ns-assets.ninjasage.id/tmp/yukionna.jpg"));
+        assert!(local.ends_with("/AppIconsForPublish/icon-512x512.png"));
+        assert!(!local.contains("ns-assets.ninjasage.id"));
+        assert_eq!(super::local_banner_url(Some(&local)), local);
+    }
     use super::*;
 
     #[test]

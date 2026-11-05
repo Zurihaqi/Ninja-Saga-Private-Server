@@ -64,13 +64,15 @@ The prebuild step generates Ruffle assets and licenses from the locked dependenc
 
 Log in to admin using an admin account or an explicitly configured `ADMIN_SECRET`. The development branch's local helper creates ignored `.tools/admin-secret.txt`; no workstation helper or private secret is shipped here.
 
-For realtime, start the separate `chat-server` and `pvp-server` binaries with the same database and appropriate listener/secret/catalog environment. Their defaults are ports 3002/3000; set `BIND_ADDR` per process. Realtime currently supports polling. Actual-client multiplayer acceptance remains pending.
+For realtime, start the separate `chat-server` and `pvp-server` binaries with the same database and appropriate listener/secret/catalog environment. Their defaults are ports 3002/3000; set `BIND_ADDR` per process. Realtime supports direct Engine.IO 3/4 WebSocket and polling. Actual-client multiplayer acceptance remains pending.
 
 ## AIR client
 
-Use the separate client copy prepared by `scripts/prepare-local-client.py` on the development branch. On the existing workstation it is `.tools/client/NSCUSTOM.exe` in that checkout, with development credentials stored locally in `.tools/local-account.json`.
+Prepare a separate client copy using the [client build instructions](../client/README.md). The helper redirects legacy endpoints and merchant URLs, compiles the skill/Pet Villa/free-product repairs, verifies the resulting bytecode, and preserves the original movie. Java/FFDec are preparation dependencies; they are not required by the running servers.
 
-The unmodified original SWF points at legacy hostnames. The helper rewrites endpoint constants in a copied SWF and uses a separate AIR storage ID, preserving the original source. No patching helper or runtime assets ship in this runtime branch. Follow [how to play](how-to-play.md) once connected.
+Use the repaired copy as `CLIENT_ASSET_ROOT`. Restart AIR or reload Ruffle after rebuilding it. Original movies/assets and local toolchains remain excluded from Git.
+
+Former real-money products are free local claims. Apply `migrate` before starting this version on an existing schema; `003_free_products` stores deduplicated claims and `002_gear_presets` saves gear presets. Provision missing event definitions explicitly with `cargo run -p game-server --bin seed-events --locked`. Existing event settings are preserved; unsupported panels remain inactive.
 
 ## Containers
 
@@ -80,7 +82,7 @@ Configure `DATABASE_URL`, `APP_URL`, `GAME_DATA_PATH` and `CLIENT_ASSET_PATH`, t
 docker compose -f infra/compose.yaml up --build
 ```
 
-The database URL must work from inside the container; `127.0.0.1` there refers to the container itself. Provisioning and additive migrations are separate. Assets are read-only mounts and host listeners default to loopback. The image includes game/chat/PvP binaries, explicit import/migration utilities and built web assets, without PHP/Node services or the protocol experiment. Node is only a frontend build dependency. Docker has not been run on the development workstation.
+The database URL must work from inside the container; `127.0.0.1` there refers to the container itself. Provisioning and additive migrations are separate. Assets are read-only mounts and host listeners default to loopback. The image includes game/chat/PvP binaries, explicit import/migration/event-provisioning utilities and built web assets, without PHP/Node services or the protocol experiment. Node is only a frontend build dependency. Docker has not been run on the development workstation.
 
 ## Restarts and diagnosis
 

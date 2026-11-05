@@ -1,27 +1,31 @@
-# Runtime progress — 2026-11-04
+# Runtime progress — 2026-11-05
 
-Status: **gameplay integration and client acceptance in progress**. [Draft PR #1](https://github.com/Zurihaqi/Ninja-Saga-Private-Server/pull/1) incorporates development checkpoint `68dbf2d7`. Original `main` remains preserved on `legacy/php-node` at `ecf9012d885d1c89fd5f42791eed4f37f90f2edd`. The PR has not been merged or deployed.
+Status: **client repair integration and acceptance in progress**. This runtime candidate incorporates development checkpoints `f77fc185` and `e712103e`. [PR #1](https://github.com/Zurihaqi/Ninja-Saga-Private-Server/pull/1) remains draft; main is not merged or deployed. Original source/assets remain preserved on `legacy/php-node` at `ecf9012d885d1c89fd5f42791eed4f37f90f2edd`.
 
-| Area | Current evidence |
-|---|---|
-| Core PvE/progression | Accounts, equipment, points, shops, academy/presets, missions, four exams, talents, Sage Mode and crafting have headless persistence checks; first mission verified in AIR and reported in Ruffle desktop |
-| Pets/inventory | Villa/combining, feeding, paid skill learning, animation buying/use, consumables and account tools implemented and checked headlessly |
-| PvE/economy modes | Hunting, Eudemon, daily rewards, markets and Shadow War implemented; representative MySQL flows pass |
-| Social | Friends, recruitment and mail implemented; clan/crew HTTP APIs exist, while the AMF bridge still has reference-style placeholder behavior requiring client integration |
-| Events/admin | Nine seasonal handlers, packages/giveaways/leaderboards, administrative REST API and React dashboard implemented; representative checks, not exhaustive event/client acceptance |
-| Realtime | Chat and PvP now have authenticated polling implementations and lifecycle/router tests. Actual two-client acceptance and required WebSocket support remain open |
-| Browser/runtime | React/Ruffle host and admin frontend build; Ruffle assets/licenses generated from the locked dependency. Runtime image definitions package all three servers, import/migration utilities and built web assets |
+## This repair batch
 
-This integration closes missing-session clan/crew token issuance, saves token rotations atomically, removes built-in admin/chat secrets and requires bcrypt-backed admin passwords. Local admin access uses the explicitly configured secret or an admin account. New pet learning has an additive schema migration; existing pet unlock behavior is retained.
+- Skill inventory shows all owned skills, isolates/cancels stale loaders and handles missing artwork without freezing selection/removal. Presets follow client prices: first free, then 200 premium/600 free-account tokens, maximum four.
 
-Development validation passes 32 regular Rust tests, strict Clippy, formatting, minimal-fixture and original-catalog MySQL regressions, and the browser build. Live checks verified the game/browser host, authenticated admin overview and chat/PvP liveness. Runtime-only verification and hosted CI are recorded in the PR; the four excluded protocol-experiment tests account for the lower runtime test count.
+- Pet Villa stops hidden voice animation, clears reused model holders, cancels stale requests and safely refreshes timers. Backend aliases, balances and level caps match its client contract.
 
-## Remaining work
+- Talent/Sage Upgrade Max accepts Flash numeric flags. Second Secret discovery requires Special Jounin rank 6.
 
-1. Complete real-client progression and natural TP/SS/material earning; finish staged S missions and remaining actions found through that audit. `getMissionSData` currently provides the reference's initial data contract.
-2. Connect and accept clan/crew panels against the HTTP services; finish the AMF behavior actually required by the client.
-3. Accept complete chat/PvP flows with two clients, including rewards, spectators and reconnects; confirm polling suffices or add the required WebSocket support.
-4. Accept later exams, pets, events and administration in AIR/Ruffle/browser. A frontend build and headless tests do not establish full panel compatibility.
-5. Verify containers, migrations, asset delivery, backups/restore and rollback in staging. Readiness still returns 503; battle sessions remain in memory and clear on restart.
+- Chat/PvP support direct Engine.IO 3/4 WebSocket and polling, with authentication/lifecycle tests and actual legacy Socket.IO 2.5 connection checks.
 
-See [production acceptance](production-readiness.md). No full-parity claim or completion percentage is made. Development helpers, original assets, credentials, protocol experiments and migration task notes remain excluded from this branch.
+- Clan/crew REST routes and membership payloads match the shipped client. Both crew battle phases persist/replay results; clan quick/manual prestige rewards persist.
+
+- Event fixes address actual argument positions, boss IDs, catalog rewards/formulas, minigame codes/replay, gacha prices/coin balances and milestone quantities. Explicit `seed-events` inserts missing reference settings while preserving existing records and keeping unsupported panels inactive.
+
+- Former real-money products are free through authenticated local claims: Recharge token packs, permanent Emblem/Trial Emblem, Ancestor and four package tiers. Requests deduplicate and preserve administrator roles. The first Emblem activation grants a Wisdom scroll. Ordinary gold/token prices remain.
+
+The prepared local movie was compiled and re-exported to verify all 12 repaired classes. Required preparation scripts ship under `client/`; generated movies/assets and workstation tools remain excluded. Separate in-progress admin redesign edits are not part of this batch.
+
+Event images are now served from the local asset tree, and optional banner loading has a five-second deadline plus guarded task completion. The user confirmed the browser gets past startup to login/the game.
+
+## Evidence and remaining work
+
+The development tree passes 36 regular Rust tests, strict Clippy, frontend build, and minimal/original-catalog isolated MySQL regressions. Live AMF checks verify free products/replays, all package tiers, presets, Villa and Wisdom data using a disposable account. The runtime tree repeats its own checks; hosted results are recorded in the PR. Four development protocol-experiment tests are excluded here.
+
+Complete real-client acceptance is still required. Seven upstream skill movies are missing. Additional seasonal event handlers, staged S missions and natural resource progression remain incomplete; inactive event definitions are not a completion claim. Full PvP rewards/reconnect/spectator flows need two-client acceptance. Containers, meaningful readiness (currently 503), backups/restore and rollback still require staging verification. Battles are held in memory and clear on restart.
+
+See [production acceptance](production-readiness.md). This is not full parity or production approval.

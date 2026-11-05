@@ -313,7 +313,7 @@ async fn dispatch_villa(pool: &MySqlPool, method: &str, args: &[Json]) -> Result
             }
 
             let pet_rows = sqlx::query(
-                "SELECT p.id, p.pet_id, p.name, p.level, p.xp, c.name AS catalog_name FROM character_pets p LEFT JOIN pets c ON c.pet_id=p.pet_id WHERE p.character_id=? ORDER BY p.id",
+                "SELECT p.id, p.pet_id, p.name, p.level, p.xp, c.name AS catalog_name, c.swf AS catalog_swf FROM character_pets p LEFT JOIN pets c ON c.pet_id=p.pet_id WHERE p.character_id=? ORDER BY p.id",
             )
             .bind(char_id)
             .fetch_all(pool)
@@ -333,7 +333,7 @@ async fn dispatch_villa(pool: &MySqlPool, method: &str, args: &[Json]) -> Result
                     "pet_name": name,
                     "pet_level": level,
                     "pet_xp": cp.try_get::<i64, _>("xp")?,
-                    "pet_swf": cp.try_get::<String, _>("pet_id")?,
+                    "pet_swf": cp.try_get::<Option<String>, _>("catalog_swf")?.filter(|v|!v.is_empty()).unwrap_or(cp.try_get::<String,_>("pet_id")?),
                     "train_time_text": format_duration(duration),
                     "train_gold": gold
                 }));
@@ -348,6 +348,14 @@ async fn dispatch_villa(pool: &MySqlPool, method: &str, args: &[Json]) -> Result
         "trainPet" => {
             let pet_instance_id = integer(args, 2);
             let mut tx = pool.begin().await?;
+            // All pet writes lock the owner before pets/slots, so training cannot
+            // race with feeding, checkout or another start for this character.
+            let owner = sqlx::query(
+                "SELECT level,gold,equipment_pet FROM characters WHERE id=? FOR UPDATE",
+            )
+            .bind(char_id)
+            .fetch_one(&mut *tx)
+            .await?;
             let Some(pet) = sqlx::query(
                 "SELECT id, level FROM character_pets WHERE id=? AND character_id=? FOR UPDATE",
             )
@@ -384,12 +392,13 @@ async fn dispatch_villa(pool: &MySqlPool, method: &str, args: &[Json]) -> Result
                 }));
             };
             let level: i32 = pet.try_get("level")?;
+            if level >= owner.try_get::<i32, _>("level")?.min(85) {
+                return Ok(
+                    json!({"status":2,"result":"This pet has reached your character's level cap."}),
+                );
+            }
             let gold_cost = training_gold(level);
-            let char_gold: i32 =
-                sqlx::query_scalar("SELECT gold FROM characters WHERE id=? FOR UPDATE")
-                    .bind(char_id)
-                    .fetch_one(&mut *tx)
-                    .await?;
+            let char_gold: i32 = owner.try_get("gold")?;
             if char_gold < gold_cost {
                 return Ok(json!({
                     "status": 2,
@@ -412,11 +421,15 @@ async fn dispatch_villa(pool: &MySqlPool, method: &str, args: &[Json]) -> Result
             .execute(&mut *tx)
             .await?;
             tx.commit().await?;
-            Ok(json!({"status": 1, "result": "Training started!"}))
+            Ok(json!({"status": 1, "result": "Training started!", "gold":char_gold-gold_cost}))
         }
         "skipTraining" => {
             let pet_instance_id = integer(args, 2);
             let mut tx = pool.begin().await?;
+            sqlx::query("SELECT id FROM characters WHERE id=? FOR UPDATE")
+                .bind(char_id)
+                .fetch_one(&mut *tx)
+                .await?;
             let Some(slot) = sqlx::query(
                 "SELECT id, training_ends_at FROM pet_villa_slots WHERE character_id=? AND pet_instance_id=? AND status=2 LIMIT 1 FOR UPDATE",
             )
@@ -466,12 +479,17 @@ async fn dispatch_villa(pool: &MySqlPool, method: &str, args: &[Json]) -> Result
             tx.commit().await?;
             Ok(json!({
                 "status": 1,
-                "result": "Training skipped! Your pet is ready for checkout."
+                "result": "Training skipped! Your pet is ready for checkout.",
+                "tokens":tokens-cost
             }))
         }
         "cancelTraining" => {
             let pet_instance_id = integer(args, 2);
             let mut tx = pool.begin().await?;
+            sqlx::query("SELECT id FROM characters WHERE id=? FOR UPDATE")
+                .bind(char_id)
+                .fetch_one(&mut *tx)
+                .await?;
             let Some(slot_id) = sqlx::query_scalar::<_, u64>(
                 "SELECT id FROM pet_villa_slots WHERE character_id=? AND pet_instance_id=? AND status=2 LIMIT 1 FOR UPDATE",
             )
@@ -494,6 +512,11 @@ async fn dispatch_villa(pool: &MySqlPool, method: &str, args: &[Json]) -> Result
         "checkoutPet" => {
             let pet_instance_id = integer(args, 2);
             let mut tx = pool.begin().await?;
+            let owner_level: i32 =
+                sqlx::query_scalar("SELECT level FROM characters WHERE id=? FOR UPDATE")
+                    .bind(char_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
             let Some(slot_id) = sqlx::query_scalar::<_, u64>(
                 "SELECT id FROM pet_villa_slots WHERE character_id=? AND pet_instance_id=? AND status=3 LIMIT 1 FOR UPDATE",
             )
@@ -515,8 +538,9 @@ async fn dispatch_villa(pool: &MySqlPool, method: &str, args: &[Json]) -> Result
                 return Ok(error("Pet not found."));
             }
             sqlx::query(
-                "UPDATE character_pets SET level=level+1, xp=0, updated_at=NOW() WHERE id=?",
+                "UPDATE character_pets SET level=GREATEST(level,LEAST(level+1,?)), xp=0, updated_at=NOW() WHERE id=?",
             )
+            .bind(owner_level.min(85))
             .bind(pet_instance_id)
             .execute(&mut *tx)
             .await?;
@@ -532,6 +556,10 @@ async fn dispatch_villa(pool: &MySqlPool, method: &str, args: &[Json]) -> Result
         "unlockSlots" => {
             let payment_type = string(args, 2);
             let mut tx = pool.begin().await?;
+            sqlx::query("SELECT id FROM characters WHERE id=? FOR UPDATE")
+                .bind(char_id)
+                .fetch_one(&mut *tx)
+                .await?;
             let Some(slot_id) = sqlx::query_scalar::<_, u64>(
                 "SELECT id FROM pet_villa_slots WHERE character_id=? AND status=0 ORDER BY slot_index LIMIT 1 FOR UPDATE",
             )

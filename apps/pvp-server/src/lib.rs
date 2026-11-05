@@ -626,7 +626,7 @@ impl PvpServer {
     fn push_to_session(session: &mut Session, pkt: EnginePacket) {
         if session.queue.len() < MAX_QUEUE {
             session.queue.push_back(pkt);
-            session.notify.notify_waiters();
+            session.notify.notify_one();
         }
     }
 
@@ -1510,13 +1510,13 @@ pub fn router(server: PvpServer) -> Router {
         .route("/crossdomain.xml", get(crossdomain_handler))
         .route(
             "/socket.io/",
-            get(socket_poll_handler)
+            get(socket_transport_handler)
                 .post(socket_post_handler)
                 .options(options_handler),
         )
         .route(
             "/socket.io",
-            get(socket_poll_handler)
+            get(socket_transport_handler)
                 .post(socket_post_handler)
                 .options(options_handler),
         )
@@ -1565,6 +1565,168 @@ impl Drop for PollGuard {
         {
             session.polling = false;
         }
+    }
+}
+
+// The AIR client requests direct WebSocket transport (Engine.IO 3).
+async fn socket_transport_handler(
+    State(server): State<PvpServer>,
+    Query(query): Query<PollParams>,
+    upgrade: Result<
+        axum::extract::ws::WebSocketUpgrade,
+        axum::extract::ws::rejection::WebSocketUpgradeRejection,
+    >,
+) -> Response {
+    if query.transport.as_deref() != Some("websocket") {
+        return socket_poll_handler(State(server), Query(query)).await;
+    }
+    let eio = match query.eio.as_deref().unwrap_or("3") {
+        "3" => 3,
+        "4" => 4,
+        _ => {
+            return cors_json(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"Unsupported Engine.IO version"}),
+            );
+        }
+    };
+    // Direct WebSocket sessions are independent; polling upgrades are not advertised.
+    if query.sid.is_some() {
+        return cors_json(
+            StatusCode::BAD_REQUEST,
+            json!({"error":"Polling upgrade is not advertised"}),
+        );
+    }
+    let Ok(upgrade) = upgrade else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    upgrade
+        .max_message_size(MAX_PACKET)
+        .max_frame_size(MAX_PACKET)
+        .on_upgrade(move |socket| websocket_session(server, socket, eio))
+        .into_response()
+}
+
+async fn websocket_session(server: PvpServer, mut socket: axum::extract::ws::WebSocket, eio: u8) {
+    use axum::extract::ws::Message;
+    // Reuse the capacity, entropy and session initialization of the polling handshake.
+    let response = socket_poll_handler(
+        State(server.clone()),
+        Query(PollParams {
+            eio: Some(eio.to_string()),
+            transport: Some("polling".into()),
+            sid: None,
+        }),
+    )
+    .await;
+    if response.status() != StatusCode::OK {
+        return;
+    }
+    let Ok(body) = axum::body::to_bytes(response.into_body(), MAX_BODY).await else {
+        return;
+    };
+    let Ok(text) = std::str::from_utf8(&body) else {
+        return;
+    };
+    let Ok(packets) = decode_polling(eio, text) else {
+        return;
+    };
+    let Some(open) = packets.first() else {
+        return;
+    };
+    let Ok(data) = serde_json::from_str::<JsonValue>(&open.data) else {
+        return;
+    };
+    let Some(sid) = data["sid"].as_str().map(str::to_owned) else {
+        return;
+    };
+    let mut connected = socket
+        .send(Message::Text(format!("0{}", open.data).into()))
+        .await
+        .is_ok();
+    // Socket.IO v2 sends the default namespace connection from the server.
+    if connected && eio == 3 {
+        connected = socket.send(Message::Text("40".into())).await.is_ok();
+    }
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(25));
+    heartbeat.tick().await;
+    while connected {
+        let (notify, packets) = {
+            let mut state = server.inner.state.lock().expect("pvp state lock poisoned");
+            let Some(session) = state.sessions.get_mut(&sid) else {
+                break;
+            };
+            (
+                session.notify.clone(),
+                session.queue.drain(..).collect::<Vec<_>>(),
+            )
+        };
+        for packet in packets {
+            let marker = match packet.kind {
+                EngineKind::Open => '0',
+                EngineKind::Close => '1',
+                EngineKind::Ping => '2',
+                EngineKind::Pong => '3',
+                EngineKind::Message => '4',
+                EngineKind::Upgrade => '5',
+                EngineKind::Noop => '6',
+            };
+            if socket
+                .send(Message::Text(format!("{marker}{}", packet.data).into()))
+                .await
+                .is_err()
+            {
+                connected = false;
+                break;
+            }
+        }
+        if !connected {
+            break;
+        }
+        // notify_one stores a permit if an event arrives between drain and wait.
+        tokio::select! {
+            _=notify.notified()=>{},
+            _=heartbeat.tick()=>{
+                let alive={let state=server.inner.state.lock().expect("pvp state lock poisoned"); state.sessions.get(&sid).is_some_and(|s|s.last_ping.elapsed()<server.inner.config.session_ttl)};
+                if !alive {break;}
+                if eio==4 && socket.send(Message::Text("2".into())).await.is_err(){break;}
+            },
+            incoming=socket.recv()=>{
+                let Some(Ok(message))=incoming else {break;};
+                match message {
+                    Message::Text(text)=>{
+                        // A WebSocket carries a single unprefixed Engine.IO packet.
+                        let Ok(decoded)=decode_payload_v4(&text,limits()) else {break;};
+                        if decoded.len()!=1 {break;}
+                        let close=decoded[0].kind==EngineKind::Close;
+                        let Ok(payload)=(if eio==3 {encode_payload(&decoded,limits())}else{encode_payload_v4(&decoded,limits())}) else {break;};
+                        let response=socket_post_handler(State(server.clone()),Query(PollParams{eio:Some(eio.to_string()),transport:Some("polling".into()),sid:Some(sid.clone())}),payload).await;
+                        if close || response.status()!=StatusCode::OK {break;}
+                    },
+                    Message::Close(_)=>break,
+                    Message::Binary(_)=>break,
+                    Message::Ping(_) | Message::Pong(_)=>{},
+                }
+            }
+        }
+    }
+    // Reuse disconnect cleanup, presence notifications and PvP forfeits.
+    let close = engine_packet(EngineKind::Close, "");
+    if let Ok(payload) = if eio == 3 {
+        encode_payload(&[close], limits())
+    } else {
+        encode_payload_v4(&[close], limits())
+    } {
+        let _ = socket_post_handler(
+            State(server),
+            Query(PollParams {
+                eio: Some(eio.to_string()),
+                transport: Some("polling".into()),
+                sid: Some(sid),
+            }),
+            payload,
+        )
+        .await;
     }
 }
 
@@ -2326,6 +2488,8 @@ fn handle_pvp_event(server: &PvpServer, sid: &str, name: &str, data: &JsonValue)
 }
 
 #[cfg(test)]
+mod websocket_tests;
+#[cfg(test)]
 mod tests {
     use super::*;
     use axum::{
@@ -2363,7 +2527,7 @@ mod tests {
         }
     }
 
-    fn test_server() -> PvpServer {
+    pub(super) fn test_server() -> PvpServer {
         let cfg = PvpConfig {
             poll_wait: Duration::from_millis(10),
             ..PvpConfig::default()

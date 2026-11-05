@@ -47,7 +47,7 @@ pub async fn list(pool: &MySqlPool, args: &[Json]) -> Result {
         characters.push(info);
     }
     Ok(
-        json!({"status":1,"error":0,"account_type":user.try_get::<i8,_>("account_type")?,"emblem_duration":-1,"tokens":user.try_get::<i32,_>("tokens")?,"total_characters":characters.len(),"account_data":characters}),
+        json!({"status":1,"error":0,"account_type":i32::from(user.try_get::<i8,_>("account_type")?>0),"emblem_duration":-1,"tokens":user.try_get::<i32,_>("tokens")?,"total_characters":characters.len(),"account_data":characters}),
     )
 }
 
@@ -82,7 +82,7 @@ pub async fn create(pool: &MySqlPool, args: &[Json]) -> Result {
         .bind(uid)
         .fetch_one(&mut *tx)
         .await?;
-    let premium = user.try_get::<i8, _>("account_type")? == 1;
+    let premium = user.try_get::<i8, _>("account_type")? > 0;
     if count >= if premium { 6 } else { 1 } {
         return Ok(
             json!({"status":2,"result":if premium {"You have reached the maximum limit of 6 characters."} else {"Free users can only create 1 character. Upgrade to Premium for 6 slots!"}}),
@@ -93,13 +93,14 @@ pub async fn create(pool: &MySqlPool, args: &[Json]) -> Result {
     let hair = format!("hair_{:0>2}_{suffix}", string(args, 6));
     let clothing = format!("set_01_{suffix}");
     let id=sqlx::query("INSERT INTO characters (user_id,name,gender,element_1,hair_style,hair_color,point_free,gold,equipment_weapon,equipment_back,equipment_clothing,equipment_accessory,equipment_skills,created_at,updated_at) VALUES (?,?,?,?,?,?,1,1000,'wpn_01','back_01',?,'accessory_01',?,NOW(),NOW())")
-        .bind(uid).bind(name).bind(gender).bind(element).bind(hair).bind(string(args,5)).bind(&clothing).bind(skill).execute(&mut *tx).await?.last_insert_id();
+        .bind(uid).bind(name).bind(gender).bind(element).bind(&hair).bind(string(args,5)).bind(&clothing).bind(skill).execute(&mut *tx).await?.last_insert_id();
     sqlx::query("INSERT INTO character_skills (character_id,skill_id,created_at,updated_at) VALUES (?,?,NOW(),NOW())").bind(id).bind(skill).execute(&mut *tx).await?;
     for (item, category) in [
         ("wpn_01", "weapon"),
         ("back_01", "back"),
         ("accessory_01", "accessory"),
         (&clothing, "set"),
+        (&hair, "hair"),
     ] {
         sqlx::query("INSERT INTO character_items (character_id,item_id,quantity,category,created_at,updated_at) VALUES (?,?,1,?,NOW(),NOW())").bind(id).bind(item).bind(category).execute(&mut *tx).await?;
     }
@@ -241,7 +242,7 @@ async fn load_character(pool: &MySqlPool, id: i64) -> Result {
             .fetch_one(pool)
             .await?;
     Ok(
-        json!({"status":1,"error":0,"announcements":"","account_type":c["account_type"],"tokens":c["account_tokens"],"emblem_duration":-1,"events":[],"has_unread_mails":unread>0,"pet_count":pet_count,"character_data":data,"character_points":points,"character_slots":{"weapons":100,"back_items":100,"accessories":100,"hairstyles":100,"clothing":100},"character_sets":sets,"character_inventory":inventory,"features":["pvp"],"recruiters":[],"recruit_data":[],"pet_data":active_pet,"clan":{"ramen":0,"hot_spring":0,"temple":0,"training_hall":0}}),
+        json!({"status":1,"error":0,"announcements":"","account_type":i32::from(c["account_type"].as_i64().unwrap_or(0)>0),"tokens":c["account_tokens"],"emblem_duration":-1,"events":[],"has_unread_mails":unread>0,"pet_count":pet_count,"character_data":data,"character_points":points,"character_slots":{"weapons":100,"back_items":100,"accessories":100,"hairstyles":100,"clothing":100},"character_sets":sets,"character_inventory":inventory,"features":["pvp"],"recruiters":[],"recruit_data":[],"pet_data":active_pet,"clan":{"ramen":0,"hot_spring":0,"temple":0,"training_hall":0}}),
     )
 }
 
@@ -321,27 +322,32 @@ pub async fn equip_skills(pool: &MySqlPool, args: &[Json]) -> Result {
     if let Some(error) = guard(pool, id, &string(args, 1), true).await? {
         return Ok(error);
     }
-    let skills = string(args, 2);
-    if skills.len() > 4096 || skills.split(',').count() > 8 {
-        return Ok(json!({"status":2,"error":"Invalid skill set"}));
-    }
+    let Some(skills) = crate::skillsets::validated_loadout(&string(args, 2)) else {
+        return Ok(json!({"status":2,"result":"Choose between 1 and 8 different skills."}));
+    };
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT id FROM characters WHERE id=? FOR UPDATE")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
     for skill in skills.split(',').filter(|s| !s.is_empty()) {
         let owned: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM character_skills WHERE character_id=? AND skill_id=?",
         )
         .bind(id)
         .bind(skill)
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await?;
         if owned == 0 {
-            return Ok(json!({"status":2,"error":"Skill is not owned"}));
+            return Ok(json!({"status":2,"result":"A selected skill is not owned."}));
         }
     }
     sqlx::query("UPDATE characters SET equipment_skills=?,updated_at=NOW() WHERE id=?")
         .bind(skills)
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(json!({"status":1}))
 }
 

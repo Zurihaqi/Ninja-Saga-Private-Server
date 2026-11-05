@@ -21,6 +21,7 @@ COPY --from=build /src/target/release/chat-server /usr/local/bin/chat-server
 COPY --from=build /src/target/release/pvp-server /usr/local/bin/pvp-server
 COPY --from=build /src/target/release/import-reference /usr/local/bin/import-reference
 COPY --from=build /src/target/release/migrate /usr/local/bin/migrate
+COPY --from=build /src/target/release/seed-events /usr/local/bin/seed-events
 COPY --from=web /web/dist /srv/web-client
 USER 10001
 ENV BIND_ADDR=0.0.0.0:8080

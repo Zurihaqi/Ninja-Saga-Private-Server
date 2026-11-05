@@ -85,14 +85,6 @@ async fn serve_skill_swf(State(state): State<GameState>, Path(filename): Path<St
                 .into_response();
         }
     }
-    let fallback = skills_dir.join("skill_01.swf");
-    if let Ok(bytes) = tokio::fs::read(&fallback).await {
-        return (
-            [(header::CONTENT_TYPE, "application/x-shockwave-flash")],
-            bytes,
-        )
-            .into_response();
-    }
     StatusCode::NOT_FOUND.into_response()
 }
 
@@ -341,25 +333,28 @@ pub(crate) async fn verify_char_session_and_issue_token(
         )
             .into_response();
     }
-    let _ = sqlx::query(&format!("DELETE FROM {table} WHERE character_id=?"))
-        .bind(char_id)
-        .execute(pool)
-        .await;
-    let token = format!(
-        "{}{}",
-        auth::random_hex().unwrap_or_default(),
-        auth::random_hex().unwrap_or_default()
-    );
-    let _ = sqlx::query(&format!(
-        "INSERT INTO {table} (user_id, character_id, token, expires_at, created_at, updated_at) \
-         VALUES (?, ?, ?, DATE_ADD(NOW(), INTERVAL 24 HOUR), NOW(), NOW())"
-    ))
-    .bind(user_id)
-    .bind(char_id)
-    .bind(&token)
-    .execute(pool)
-    .await;
-    AxumJson(json!({"status": 1, "access_token": token})).into_response()
+    let issued=async {
+        let mut tx=pool.begin().await?;
+        sqlx::query("SELECT id FROM characters WHERE id=? FOR UPDATE").bind(char_id).fetch_one(&mut *tx).await?;
+        let first=auth::random_hex().map_err(|_|sqlx::Error::Protocol("Token entropy unavailable".into()))?;
+        let second=auth::random_hex().map_err(|_|sqlx::Error::Protocol("Token entropy unavailable".into()))?;
+        let token=format!("{first}{second}");
+        sqlx::query(&format!("DELETE FROM {table} WHERE character_id=?")).bind(char_id).execute(&mut *tx).await?;
+        sqlx::query(&format!("INSERT INTO {table} (user_id,character_id,token,expires_at,created_at,updated_at) VALUES (?,?,?,DATE_ADD(NOW(),INTERVAL 24 HOUR),NOW(),NOW())")).bind(user_id).bind(char_id).bind(&token).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok::<_,sqlx::Error>(token)
+    }.await;
+    match issued {
+        Ok(token) => AxumJson(json!({"status":1,"access_token":token})).into_response(),
+        Err(error) => {
+            tracing::error!(%error,"Social token issuance failed");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                AxumJson(json!({"status":0,"errorMessage":"Unable to create session"})),
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn handle_clan_login(pool: &MySqlPool, params: &HashMap<String, String>) -> Response {
@@ -462,6 +457,13 @@ async fn format_clan_full(
         "temple": b_json.get("temple").and_then(Json::as_i64).unwrap_or(0),
         "training_hall": b_json.get("training_hall").and_then(Json::as_i64).unwrap_or(0),
     })))
+}
+
+async fn clan_character(pool: &MySqlPool, char_id: i64) -> std::result::Result<Json, sqlx::Error> {
+    let Some(r)=sqlx::query("SELECT m.*,c.name,c.level,c.prestige AS character_prestige,UNIX_TIMESTAMP(m.prestige_boost_expires_at) AS boost_ts FROM clan_members m JOIN characters c ON c.id=m.character_id WHERE m.character_id=?").bind(char_id).fetch_optional(pool).await? else {return Ok(Json::Null);};
+    Ok(
+        json!({"char_id":char_id,"name":r.get::<String,_>("name"),"level":r.get::<i32,_>("level"),"role":r.get::<String,_>("role"),"stamina":r.get::<u32,_>("stamina"),"max_stamina":r.get::<u32,_>("max_stamina"),"prestige":r.get::<i32,_>("character_prestige"),"reputation":0,"gold_donated":r.get::<u64,_>("donated_golds"),"token_donated":r.get::<u64,_>("donated_tokens"),"prestige_boost":(r.try_get::<Option<i64>,_>("boost_ts")?.unwrap_or(0)-now_ts()).max(0)}),
+    )
 }
 
 async fn format_clan_members(
@@ -606,6 +608,20 @@ async fn dispatch_clan_route(
                 }
             }))
         }
+        ["player", "clan-members"] => {
+            let clan_id: Option<u64> =
+                sqlx::query_scalar("SELECT clan_id FROM clan_members WHERE character_id=?")
+                    .bind(char_id)
+                    .fetch_optional(pool)
+                    .await?;
+            let members = if let Some(id) = clan_id {
+                format_clan_members(pool, id).await?
+            } else {
+                vec![]
+            };
+            Ok(json!({"members":members}))
+        }
+        ["player", "stamina"] => Ok(json!({"char":clan_character(pool,char_id).await?})),
         ["player", "clan"] => {
             let member = sqlx::query("SELECT clan_id FROM clan_members WHERE character_id=?")
                 .bind(char_id)
@@ -622,6 +638,7 @@ async fn dispatch_clan_route(
             Ok(json!({
                 "clan": clan,
                 "members": members,
+                "char": clan_character(pool,char_id).await?,
                 "date": sid,
             }))
         }
@@ -678,7 +695,7 @@ async fn dispatch_clan_route(
                 .collect();
             Ok(json!({ "histories": histories }))
         }
-        ["opponents"] => {
+        ["opponents"] | ["battle", "opponents"] => {
             let clan_id: u64 =
                 sqlx::query_scalar("SELECT clan_id FROM clan_members WHERE character_id=?")
                     .bind(char_id)
@@ -690,7 +707,9 @@ async fn dispatch_clan_route(
                     .await?;
             Ok(json!({ "clans": clans }))
         }
-        ["opponents", id_str] => {
+        ["opponents", id_str]
+        | ["battle", "opponents", id_str]
+        | ["request", "available", id_str] => {
             let clans =
                 format_clan_summaries(pool, "WHERE c.id = ?", Some((*id_str).into()), 1).await?;
             Ok(json!({ "clans": clans }))
@@ -708,11 +727,11 @@ async fn dispatch_clan_route(
             };
             Ok(json!({ "clans": clans }))
         }
-        ["request", "all"] => {
+        ["request", "available"] => {
             let clans = format_clan_summaries(pool, "", None, 50).await?;
             Ok(json!({ "clans": clans }))
         }
-        ["request", "send", clan_id_str] => {
+        ["request", "send", clan_id_str] | ["player", "request", clan_id_str] => {
             let target_clan_id = clan_id_str.parse::<u64>().unwrap_or(0);
             let in_clan: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM clan_members WHERE character_id=?")
@@ -747,22 +766,22 @@ async fn dispatch_clan_route(
             }
             Ok(json!({ "result": "Request to join clan sent!" }))
         }
-        ["request", "available"] => {
+        ["request", "all"] => {
             let member = sqlx::query("SELECT clan_id, role FROM clan_members WHERE character_id=?")
                 .bind(char_id)
                 .fetch_optional(pool)
                 .await?;
             let Some(m) = member else {
-                return Ok(json!({ "requests": [] }));
+                return Ok(json!({ "requests": [],"total":0 }));
             };
             let role: String = m.get("role");
             if role != "master" && role != "elder" {
-                return Ok(json!({ "requests": [] }));
+                return Ok(json!({ "requests": [],"total":0 }));
             }
             let clan_id: u64 = m.get("clan_id");
             let rows = sqlx::query(
-                "SELECT cr.id, cr.character_id, c.name, c.level \
-                 FROM clan_requests cr LEFT JOIN characters c ON c.id = cr.character_id \
+                "SELECT cr.id, cr.character_id, c.name, c.level,c.element_1,c.element_2,c.element_3,u.account_type \
+                 FROM clan_requests cr LEFT JOIN characters c ON c.id = cr.character_id LEFT JOIN users u ON u.id=c.user_id \
                  WHERE cr.clan_id=? AND cr.status='pending'",
             )
             .bind(clan_id)
@@ -774,14 +793,18 @@ async fn dispatch_clan_route(
                     json!({
                         "id": r.get::<u64, _>("id"),
                         "char_id": r.get::<u64, _>("character_id"),
+                        "emblem":i32::from(r.get::<Option<i8>,_>("account_type").unwrap_or(0)>0),
+                        "element_1":r.get::<Option<i32>,_>("element_1").unwrap_or(0),
+                        "element_2":r.get::<Option<i32>,_>("element_2").unwrap_or(0),
+                        "element_3":r.get::<Option<i32>,_>("element_3").unwrap_or(0),
                         "name": r.get::<Option<String>, _>("name").unwrap_or_else(|| "Unknown".into()),
                         "level": r.try_get::<Option<i32>, _>("level").ok().flatten().unwrap_or(1),
                     })
                 })
                 .collect();
-            Ok(json!({ "requests": requests }))
+            Ok(json!({ "total":requests.len(),"requests": requests }))
         }
-        ["request", req_id_str, "reject"] => {
+        ["request", req_id_str, "reject"] if *req_id_str != "all" => {
             let req_id = req_id_str.parse::<u64>().unwrap_or(0);
             let member = sqlx::query("SELECT clan_id, role FROM clan_members WHERE character_id=?")
                 .bind(char_id)
@@ -794,14 +817,14 @@ async fn dispatch_clan_route(
             if role != "master" && role != "elder" {
                 return Ok(json!({ "errorMessage": "Unauthorized" }));
             }
-            sqlx::query("UPDATE clan_requests SET status='rejected', updated_at=NOW() WHERE id=? AND clan_id=?")
+            sqlx::query("UPDATE clan_requests SET status='rejected', updated_at=NOW() WHERE character_id=? AND clan_id=?")
                 .bind(req_id)
                 .bind(m.get::<u64, _>("clan_id"))
                 .execute(pool)
                 .await?;
             Ok(json!({ "success": true }))
         }
-        ["request", "reject-all"] => {
+        ["request", "reject-all"] | ["request", "all", "reject"] => {
             let member = sqlx::query("SELECT clan_id, role FROM clan_members WHERE character_id=?")
                 .bind(char_id)
                 .fetch_optional(pool)
@@ -834,7 +857,7 @@ async fn dispatch_clan_route(
             }
             let clan_id: u64 = m.get("clan_id");
             let Some(req_row) = sqlx::query(
-                "SELECT character_id FROM clan_requests WHERE id=? AND clan_id=? AND status='pending'",
+                "SELECT id,character_id FROM clan_requests WHERE character_id=? AND clan_id=? AND status='pending'",
             )
             .bind(req_id)
             .bind(clan_id)
@@ -843,6 +866,7 @@ async fn dispatch_clan_route(
             else {
                 return Ok(json!({ "errorMessage": "Request not found" }));
             };
+            let req_id: u64 = req_row.get("id");
             let target_char_id: u64 = req_row.get("character_id");
             let max_members: u32 = sqlx::query_scalar("SELECT max_members FROM clans WHERE id=?")
                 .bind(clan_id)
@@ -1407,6 +1431,11 @@ async fn dispatch_clan_route(
                     .execute(&mut *tx)
                     .await?;
             }
+            sqlx::query("UPDATE characters SET prestige=prestige+?,updated_at=NOW() WHERE id=?")
+                .bind(prestige_gain)
+                .bind(char_id)
+                .execute(&mut *tx)
+                .await?;
             tx.commit().await?;
             let (sid, _) = ensure_clan_season(pool).await?;
             sqlx::query(
@@ -1509,6 +1538,10 @@ async fn dispatch_clan_route(
             sqlx::query("UPDATE clans SET prestige=?, updated_at=NOW() WHERE id=?")
                 .bind(new_def_rep)
                 .bind(opp_id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("UPDATE characters SET prestige=prestige+5,updated_at=NOW() WHERE id=?")
+                .bind(char_id)
                 .execute(&mut *tx)
                 .await?;
             tx.commit().await?;

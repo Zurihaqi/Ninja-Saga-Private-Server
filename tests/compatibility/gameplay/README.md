@@ -16,3 +16,5 @@ Replace placeholders with isolated credentials. Bootstrap creates the baseline s
 The development branch retains `scripts/test-gameplay.ps1` and its `-ReferenceCatalog` helper; those workstation scripts are excluded here. Accounts are uniquely named and deleted on success; failures can leave test accounts for diagnosis. All global fixture changes stay in the test schema. Never target a playable or production database.
 
 Coverage lives in `apps/game-server/src/lib.rs`, `src/tests/extension.rs` and `src/tests/player_actions.rs`. Original-catalog requirements are read from their definitions rather than assumed from synthetic fixtures. Actual-client rendering, complete event coverage and full two-client multiplayer acceptance remain open.
+
+Client-contract regressions additionally cover floating-point Upgrade Max, preset prices, Pet Villa aliases/timers/training limits, exact clan/crew REST routes, both crew battle phases, saved clan prestige, shipped Christmas battle/minigame/gacha payloads, and free-product replay protection.

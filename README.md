@@ -13,7 +13,9 @@ The original PHP/Node implementation and client assets are preserved on [`legacy
 
 Accounts and characters; equipment and points; shops; normal/advanced academy and skill presets; mission XP/gold; four rank exams through Ninja Tutor; pet purchasing/equipment/mission XP; NPC recruitment; 65 blacksmith recipes; consumables; talents; Sage Mode; and Special Jounin class selection.
 
-Additional implementation now includes hunting/markets, daily rewards, pet Villa/combining, food/paid pet skills, friends/mail, Shadow War, seasonal events, administrative APIs, realtime chat/PvP polling and a React/Ruffle browser/admin host. Later progression and realtime have headless coverage; complete player progression, clan/crew integration and actual-client multiplayer remain acceptance work. Unimplemented AMF methods return errors.
+Additional implementation now includes hunting/markets, daily rewards, pet Villa/combining, food/paid pet skills, friends/mail, Shadow War, seasonal events, administrative APIs, realtime WebSocket/polling chat/PvP and a React/Ruffle browser/admin host. Later progression and realtime have headless coverage; complete player progression, clan/crew integration and actual-client multiplayer remain acceptance work. Unimplemented AMF methods return errors.
+
+Skills/Pet Villa client repairs, corrected event and clan/crew contracts, saved clan prestige, both crew battle phases and free former real-money products are integrated. Gold/token gameplay prices remain; Recharge, permanent Emblem and package products claim locally without payment. See [client preparation](client/README.md).
 
 ## Build and validate
 
@@ -38,10 +40,11 @@ Run `game-server` with `DATABASE_URL`, `GAME_DATA_ROOT`, `CLIENT_ASSET_ROOT`, `W
 |---|---|
 | `apps/` | Game, chat and PvP services, explicit import/migration commands and browser/admin UI |
 | `crates/` | AMF codec, authentication, MySQL persistence and shared HTTP process infrastructure |
+| `client/` | Required build-time client repairs; no downloaded movies or workstation credentials |
 | `database/` | Original schema, static recipes and synthetic CI fixtures |
 | `tests/` | Protocol fixtures and headless gameplay data |
 | `.github/` | Runtime CI |
 | `infra/` | Runtime Docker/Compose definitions; execution still requires staging verification |
 | `docs/` | Play instructions, operations, progress and production acceptance |
 
-Local credentials, `.tools/`, downloaded original assets, build outputs, fixture generators, Node polling experiments and migration task notes are excluded. Tests and CI remain. Actual chat/PvP implementations are included; the experimental protocol service is excluded. Ruffle assets/licenses are generated from the locked npm dependency during build. The image includes three service binaries, explicit import/migration utilities and built browser assets. Node is a frontend build dependency; PHP and Node services are unnecessary at runtime.
+Local credentials, `.tools/`, downloaded original assets, build outputs, fixture generators, Node polling experiments and migration task notes are excluded. Tests and CI remain. Actual chat/PvP implementations are included; the experimental protocol service is excluded. Ruffle assets/licenses are generated from the locked npm dependency during build. The image includes three service binaries, explicit import/migration/event-provisioning utilities and built browser assets. Node is a frontend build dependency; PHP and Node services are unnecessary at runtime.

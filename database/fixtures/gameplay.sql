@@ -7,8 +7,8 @@ INSERT IGNORE INTO skills (skill_id,name,level,element,price_gold,price_tokens,p
 INSERT IGNORE INTO pets (pet_id,name,swf,price_gold,price_tokens,premium) VALUES ('pet_regression','Regression pet','pet_01',50,0,0);
 INSERT IGNORE INTO npcs (npc_id,name,level,`rank`,hp,cp,agility,dodge,critical,accuracy,purify,price_gold) VALUES ('npc_regression','Regression teammate',1,1,100,100,5,0,0,0,0,25);
 INSERT IGNORE INTO game_configs (`key`,value) VALUES
-('talent_shop','{"extreme":[{"id":"de"}],"secret":[]}'),
-('talent_info','{"de":{"is_emblem":false,"price_gold":500000,"price_token":0}}'),
+('talent_shop','{"extreme":[{"id":"de"}],"secret":[{"id":"wood"}]}'),
+('talent_info','{"de":{"is_emblem":false,"price_gold":500000,"price_token":0},"wood":{"is_emblem":false,"price_gold":1000000,"price_token":0}}'),
 ('talent_description','{"talent_de_skill_1":{"talent_skill_id":"skill_1006"}}'),
 ('academy_chains','{"fire":{"rage":["skill_152","skill_232"]}}'),
 ('eudemon','{"default_tries":3,"bosses":[{"id":"ene_01","lvl":1,"xp":50,"gold":100,"rewards":["material_509",{"id":"material_01","rate":100,"min":2,"max":2,"unique":false,"owned_rate":0}]}]}'),

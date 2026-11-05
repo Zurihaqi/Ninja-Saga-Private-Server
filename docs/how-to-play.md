@@ -52,3 +52,11 @@ Daily rewards, hunting/markets, Shadow War, friends/mail, pet training/combining
 | Readiness 503 | Expected in this preview; production acceptance is unfinished. |
 
 Saved progress survives backend restarts; unfinished missions do not. Report errors with action, character level/rank and error text, excluding credentials/session keys. [Headless tests](../tests/compatibility/gameplay/README.md) check server behavior without recording or controlling the game window.
+
+## Repaired panels and free products
+
+Use the repaired local client described in [client preparation](../client/README.md). Its first skill tab shows all owned skills. Missing artwork no longer locks selection or removal; seven upstream skill movies remain unavailable. The first skill preset is free; further slots cost 200 premium/600 free-account tokens, up to four presets.
+
+Pet Villa cancels stale model loads, stops its hidden voice timeline and clears training timers before refresh. A second Secret talent requires rank 6 or higher. Upgrade Max accepts the numeric flag sent by Flash.
+
+Recharge token packs, permanent Emblem/Trial Emblem, Ancestor and four package tiers are free local claims. No merchant or payment service is needed. Gold/token purchases inside ordinary gameplay retain their prices. Restart AIR or reload the browser after replacing the local movie.
