@@ -1,0 +1,22 @@
+{
+  "provenance": "Synthetic packets encoded by engine.io-parser 2.2.1",
+  "protocol": 3,
+  "packets": [
+    {
+      "type": "ping",
+      "data": "probe"
+    },
+    {
+      "type": "message",
+      "data": "0/compat,"
+    },
+    {
+      "type": "message",
+      "data": "2/compat,[\"echo\",\"忍者😀\",{\"value\":1}]"
+    },
+    {
+      "type": "close"
+    }
+  ],
+  "encoded": "6:2probe10:40/compat,37:42/compat,[\"echo\",\"忍者😀\",{\"value\":1}]1:1"
+}

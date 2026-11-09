@@ -1,0 +1,65 @@
+[
+    {
+        "item": "wpn_81",
+        "materials": [
+            "material_509"
+        ],
+        "qty": [
+            10
+        ]
+    },
+    {
+        "item": "wpn_82",
+        "materials": [
+            "material_509"
+        ],
+        "qty": [
+            15
+        ]
+    },
+    {
+        "item": "wpn_83",
+        "materials": [
+            "material_509"
+        ],
+        "qty": [
+            20
+        ]
+    },
+    {
+        "item": "wpn_84",
+        "materials": [
+            "material_509"
+        ],
+        "qty": [
+            25
+        ]
+    },
+    {
+        "item": "wpn_85",
+        "materials": [
+            "material_509"
+        ],
+        "qty": [
+            30
+        ]
+    },
+    {
+        "item": "wpn_86",
+        "materials": [
+            "material_509"
+        ],
+        "qty": [
+            35
+        ]
+    },
+    {
+        "item": "pet_divinewolf",
+        "materials": [
+            "material_509"
+        ],
+        "qty": [
+            100
+        ]
+    }
+]

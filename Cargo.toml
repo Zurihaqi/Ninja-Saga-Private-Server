@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = ["apps/game-server", "apps/chat-server", "apps/pvp-server", "crates/shared", "crates/amf-codec", "crates/authentication", "crates/persistence", "crates/socket-protocol"]
+default-members = ["apps/game-server"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+axum = { version = "=0.8.8", features = ["ws"] }
+tokio = { version = "=1.49.0", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.22", features = ["env-filter", "json"] }
+shared = { path = "crates/shared" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+lto = "thin"
+strip = true

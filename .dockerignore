@@ -1,0 +1,11 @@
+.git
+.tools
+target
+reference/upstream
+.env
+**/__pycache__
+**/*.pyc
+**/node_modules
+**/dist
+apps/web-client/public/ruffle
+**/vendor

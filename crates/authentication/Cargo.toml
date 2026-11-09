@@ -1,0 +1,19 @@
+[package]
+name = "authentication"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+aes = "=0.8.4"
+cbc = { version = "=0.1.2", features = ["alloc"] }
+base64 = "=0.22.1"
+sha2 = "=0.10.9"
+sha1 = "=0.10.7"
+md-5 = "=0.10.6"
+getrandom = "=0.3.4"
+subtle = "=2.6.1"
+bcrypt = "=0.17.1"
+
+[lints]
+workspace = true
